@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+    name = "gpu-probe"
+    version = "0.1.0"
+    edition = "2024"
+    authors = ["Jorge Menjivar <jorge@menjivar.ai>"]
+    license = "Apache-2.0"
+    repository = "https://github.com/jorge-menjivar/gpu-probe"
+    readme = "README.md"
+    description = "Cross-platform GPU memory (VRAM) detection with no vendor SDKs — uses NVML, Linux DRM sysfs (AMD/Intel), and macOS system_profiler/sysctl."
+    keywords = ["amd", "gpu", "intel", "nvidia", "vram"]
+    categories = ["hardware-support"]
+
+[dependencies]
+    nvml-wrapper = { version = "0.12", optional = true }
+
+[features]
+    default = ["nvidia"]
+    # NVIDIA support via NVML (`libnvidia-ml`, loaded at runtime). Disable to
+    # drop the `nvml-wrapper` dependency entirely (e.g. AMD/Apple-only builds).
+    nvidia = ["dep:nvml-wrapper"]
