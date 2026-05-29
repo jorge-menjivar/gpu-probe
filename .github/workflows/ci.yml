@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - stable
+          - beta
+          - nightly
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run tests
+        run: cargo test --all-features --verbose
+
+      - name: Run doctests
+        run: cargo test --doc --all-features --verbose
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features --workspace -- -W clippy::pedantic -D warnings -W unused_must_use
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@cargo-tarpaulin
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-tarpaulin-${{ hashFiles('**/Cargo.lock') }}
+      - name: Generate code coverage
+        run: cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out xml
+      - name: Upload to codecov.io
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        uses: codecov/codecov-action@v3
+        with:
+          fail_ci_if_error: true
+
+  package-size:
+    name: Check Package Size
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check package size
+        run: |
+          # Run dry-run and capture output
+          echo "Checking package size..."
+          DRY_RUN_OUTPUT=$(cargo publish --dry-run 2>&1)
+
+          # Extract size from output (format: "Packaged X files, Y.ZKiB (A.BKiB compressed)")
+          SIZE_LINE=$(echo "$DRY_RUN_OUTPUT" | grep -E "Packaged.*\([0-9.]+[KM]iB compressed\)")
+          if [ -z "$SIZE_LINE" ]; then
+            echo "Warning: Could not extract package size from output"
+            echo "Dry run output:"
+            echo "$DRY_RUN_OUTPUT"
+          else
+            # Extract compressed size (the one in parentheses)
+            COMPRESSED_SIZE=$(echo "$SIZE_LINE" | sed -E 's/.*\(([0-9.]+)([KM])iB compressed\).*/\1 \2/')
+            SIZE_NUM=$(echo "$COMPRESSED_SIZE" | cut -d' ' -f1)
+            SIZE_UNIT=$(echo "$COMPRESSED_SIZE" | cut -d' ' -f2)
+
+            echo "Package compressed size: ${SIZE_NUM}${SIZE_UNIT}iB"
+
+            # Convert to KB for comparison
+            if [ "$SIZE_UNIT" = "M" ]; then
+              SIZE_KB=$(echo "$SIZE_NUM * 1024" | bc | cut -d. -f1)
+            else
+              SIZE_KB=$(echo "$SIZE_NUM" | cut -d. -f1)
+            fi
+
+            # Check if size exceeds 50KB
+            if [ "$SIZE_KB" -gt 50 ]; then
+              echo "::warning::Package size (${SIZE_KB}KB) exceeds 50KB limit"
+              echo "Consider:"
+              echo "  - Reviewing included files in Cargo.toml"
+              echo "  - Checking for unnecessary test assets"
+              echo "  - Using exclude patterns for large files"
+              # Don't fail CI, just warn
+            else
+              echo "✓ Package size check passed (${SIZE_KB}KB <= 50KB)"
+            fi
+          fi
