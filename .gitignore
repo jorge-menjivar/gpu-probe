@@ -4,6 +4,9 @@
 *.pdb
 Cargo.lock
 
+# Coverage (`just coverage-lcov`); the HTML report lands under /target/.
+lcov.info
+
 # Python
 __pycache__/
 *.py[cod]
