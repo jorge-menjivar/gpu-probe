@@ -38,6 +38,14 @@ test-all:
 package:
     cargo publish --dry-run --allow-dirty
 
-# Print code coverage to the terminal without writing any report files.
-cov:
-    cargo tarpaulin --engine llvm --out Stdout
+# Measure code coverage (requires cargo-llvm-cov). --remap-path-prefix keeps the
+# report paths relative (src/...), and tests/ is excluded so only product code is
+# counted. No --locked: this is a library, so Cargo.lock is deliberately not
+# committed. Usage: just coverage [--html]
+coverage *args:
+    cargo llvm-cov --all-features --remap-path-prefix --ignore-filename-regex 'tests/' {{ args }}
+
+# Coverage for CI: write lcov.info and print a summary.
+coverage-lcov:
+    cargo llvm-cov --all-features --remap-path-prefix --ignore-filename-regex 'tests/' --lcov --output-path lcov.info
+    cargo llvm-cov report --summary-only --ignore-filename-regex 'tests/'
