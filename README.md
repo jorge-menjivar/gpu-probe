@@ -73,6 +73,7 @@ Or run the bundled example: `cargo run --example detect`.
 
 - `total_bytes` is dedicated VRAM on discrete GPUs. On integrated/unified GPUs (Intel iGPUs, AMD APUs, Apple Silicon) it's the shared system-memory ceiling, and `free_bytes` / `used_bytes` are usually `None`.
 - NVIDIA detection reads NVML from the installed driver at runtime — the CUDA toolkit is not required.
+- NVML is initialized once per process and intentionally never shut down. Cycling `nvmlInit`/`nvmlShutdown` leaks a file descriptor each time, so `detect()` is safe to poll on a timer: descriptor use is flat, and each call still returns live memory values.
 
 ## License
 

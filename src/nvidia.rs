@@ -9,10 +9,47 @@
 
 #[cfg(feature = "nvidia")]
 use crate::{GpuInfo, Vendor};
+#[cfg(feature = "nvidia")]
+use nvml_wrapper::Nvml;
+#[cfg(feature = "nvidia")]
+use std::sync::OnceLock;
+
+/// The process-wide NVML handle.
+///
+/// NVML is initialized at most once and **never shut down**. This is
+/// deliberate, not an oversight: cycling `nvmlInit`/`nvmlShutdown` permanently
+/// costs one file descriptor per cycle (an `eventfd` that shutdown does not
+/// return), so a caller polling [`detect`](crate::detect) on a timer exhausts
+/// its fd table and can no longer `accept()` connections. Holding one handle is
+/// flat across calls, and queries against it still return live values — so
+/// `memory_info()` readouts stay current.
+///
+/// Do not add a shutdown or make this handle droppable.
+#[cfg(feature = "nvidia")]
+static NVML: OnceLock<Nvml> = OnceLock::new();
+
+/// The shared NVML handle, initializing it on first use.
+///
+/// Only *success* is cached. A failed init allocates no file descriptors, so
+/// retrying costs nothing but a failed `dlopen`; caching the failure instead
+/// would mean a host whose driver loads after the first call — or a daemon that
+/// starts before the driver is up — reports "no NVIDIA GPU" until it restarts.
+#[cfg(feature = "nvidia")]
+fn nvml() -> Option<&'static Nvml> {
+    if let Some(nvml) = NVML.get() {
+        return Some(nvml);
+    }
+    let nvml = Nvml::init().ok()?;
+    // A concurrent first call may have won the race, in which case our handle
+    // is dropped here and theirs is returned. `nvmlInit`/`nvmlShutdown` are
+    // reference counted, so the winner's handle stays valid. This costs one fd,
+    // once, and only when two threads make the very first call simultaneously.
+    Some(NVML.get_or_init(|| nvml))
+}
 
 #[cfg(feature = "nvidia")]
 pub(crate) fn detect() -> Vec<GpuInfo> {
-    let Ok(nvml) = nvml_wrapper::Nvml::init() else {
+    let Some(nvml) = nvml() else {
         return Vec::new();
     };
     let Ok(count) = nvml.device_count() else {
