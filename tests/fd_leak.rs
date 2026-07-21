@@ -50,4 +50,8 @@ fn probing_does_not_leak_file_descriptors() {
     assert_flat("detect()", || {
         let _ = gpu_probe::detect();
     });
+    // `cuda_host()` shares the same handle, so polling it must be flat too.
+    assert_flat("cuda_host()", || {
+        let _ = gpu_probe::cuda_host();
+    });
 }

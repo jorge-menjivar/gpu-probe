@@ -69,6 +69,30 @@ let emptiest = gpu_probe::detect()
 
 Or run the bundled example: `cargo run --example detect`.
 
+### CUDA host properties
+
+Compute capability and CUDA driver version describe the host and its driver
+rather than any one GPU, so they're returned separately — handy for selecting a
+prebuilt artifact that matches the machine:
+
+```rust
+use gpu_probe::ComputeCapability;
+
+if let Some(cuda) = gpu_probe::cuda_host() {
+    println!("{} / CUDA {}", cuda.compute_capability, cuda.driver_version);
+    // 8.6 / CUDA 13.3
+
+    if cuda.compute_capability >= ComputeCapability::new(8, 0) {
+        // pick an Ampere-or-newer build
+    }
+}
+```
+
+Both are `major`/`minor` pairs ordered major-first, so comparing against a
+minimum requirement works directly. `None` means NVML is unavailable — no
+NVIDIA driver, no device, the `nvidia` feature disabled, or a driver reporting
+unusable values.
+
 ## Notes
 
 - `total_bytes` is dedicated VRAM on discrete GPUs. On integrated/unified GPUs (Intel iGPUs, AMD APUs, Apple Silicon) it's the shared system-memory ceiling, and `free_bytes` / `used_bytes` are usually `None`.

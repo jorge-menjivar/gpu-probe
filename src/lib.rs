@@ -88,6 +88,87 @@ fn gib(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0 * 1024.0)
 }
 
+/// CUDA compute capability, e.g. `8.6` for `sm_86`.
+///
+/// Ordered `major` first, so a host can be checked against a minimum:
+///
+/// ```
+/// use gpu_probe::ComputeCapability;
+/// assert!(ComputeCapability::new(8, 6) >= ComputeCapability::new(8, 0));
+/// assert!(ComputeCapability::new(9, 0) >= ComputeCapability::new(8, 9));
+/// ```
+///
+/// Constructible so callers can express such a requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ComputeCapability {
+    /// Major version — the `8` in `8.6`.
+    pub major: u32,
+    /// Minor version — the `6` in `8.6`.
+    pub minor: u32,
+}
+
+impl ComputeCapability {
+    /// Create a compute capability from its major and minor parts.
+    #[must_use]
+    pub const fn new(major: u32, minor: u32) -> Self {
+        Self { major, minor }
+    }
+}
+
+impl std::fmt::Display for ComputeCapability {
+    /// Renders as `8.6`, matching `nvidia-smi`'s `compute_cap`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.major, self.minor)
+    }
+}
+
+/// A CUDA version, e.g. `12.9`.
+///
+/// Ordered `major` first, so a host can be checked against a minimum:
+///
+/// ```
+/// use gpu_probe::CudaVersion;
+/// assert!(CudaVersion::new(12, 9) >= CudaVersion::new(12, 0));
+/// ```
+///
+/// Constructible so callers can express such a requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CudaVersion {
+    /// Major version — the `12` in `12.9`.
+    pub major: u32,
+    /// Minor version — the `9` in `12.9`.
+    pub minor: u32,
+}
+
+impl CudaVersion {
+    /// Create a CUDA version from its major and minor parts.
+    #[must_use]
+    pub const fn new(major: u32, minor: u32) -> Self {
+        Self { major, minor }
+    }
+}
+
+impl std::fmt::Display for CudaVersion {
+    /// Renders as `12.9`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.major, self.minor)
+    }
+}
+
+/// Host-wide CUDA properties reported by the NVIDIA driver.
+///
+/// These describe the host and its driver rather than any one GPU, which is why
+/// they are separate from the per-GPU [`GpuInfo`]. Consumers typically use them
+/// to select a prebuilt artifact compatible with the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CudaHost {
+    /// Compute capability of device 0.
+    pub compute_capability: ComputeCapability,
+    /// Version of the installed CUDA driver.
+    pub driver_version: CudaVersion,
+}
+
 /// Detect all GPUs visible on the host.
 ///
 /// Best-effort: spawns only read-only platform queries (NVML, `system_profiler`,
@@ -100,6 +181,32 @@ pub fn detect() -> Vec<GpuInfo> {
     gpus.extend(drm::detect());
     gpus.extend(metal::detect());
     gpus
+}
+
+/// Host-wide CUDA properties, or `None` when NVML is unavailable — no NVIDIA
+/// driver, the `nvidia` feature disabled, no device, or a driver reporting
+/// values that aren't usable.
+///
+/// Shares the one process-wide NVML handle with [`detect`], so calling this on
+/// a timer does not accumulate resources.
+///
+/// ```no_run
+/// use gpu_probe::ComputeCapability;
+///
+/// if let Some(cuda) = gpu_probe::cuda_host() {
+///     println!("sm_{}{} on CUDA {}",
+///         cuda.compute_capability.major,
+///         cuda.compute_capability.minor,
+///         cuda.driver_version);
+///
+///     if cuda.compute_capability >= ComputeCapability::new(8, 0) {
+///         // pick an Ampere-or-newer build
+///     }
+/// }
+/// ```
+#[must_use]
+pub fn cuda_host() -> Option<CudaHost> {
+    nvidia::cuda_host()
 }
 
 #[cfg(test)]
@@ -189,6 +296,44 @@ mod tests {
                     "free/used must be coherent",
                 );
             }
+        }
+    }
+
+    #[test]
+    fn versions_display_as_major_dot_minor() {
+        assert_eq!(ComputeCapability::new(8, 6).to_string(), "8.6");
+        assert_eq!(CudaVersion::new(12, 9).to_string(), "12.9");
+        // A two-digit minor stays unambiguous — the reason these aren't packed
+        // into a single integer.
+        assert_eq!(ComputeCapability::new(8, 10).to_string(), "8.10");
+    }
+
+    #[test]
+    fn versions_order_by_major_then_minor() {
+        assert!(ComputeCapability::new(8, 6) > ComputeCapability::new(8, 0));
+        assert!(ComputeCapability::new(9, 0) > ComputeCapability::new(8, 9));
+        assert_eq!(ComputeCapability::new(8, 6), ComputeCapability::new(8, 6));
+        assert!(CudaVersion::new(12, 9) > CudaVersion::new(12, 0));
+        assert!(CudaVersion::new(13, 0) > CudaVersion::new(12, 9));
+        // Packing as `major * 10 + minor` would collide here: 8.10 and 9.0
+        // both pack to 90, which is why the parts are kept separate.
+        assert!(ComputeCapability::new(9, 0) > ComputeCapability::new(8, 10));
+    }
+
+    #[test]
+    fn cuda_host_is_environment_dependent_but_coherent() {
+        // No NVIDIA driver is a valid, passing environment.
+        if let Some(cuda) = cuda_host() {
+            assert!(
+                cuda.compute_capability.major > 0,
+                "a real device has a nonzero major capability",
+            );
+            assert!(cuda.driver_version.major > 0, "a real driver has a version");
+            assert_eq!(
+                cuda_host(),
+                Some(cuda),
+                "host/driver properties must be stable across calls",
+            );
         }
     }
 
