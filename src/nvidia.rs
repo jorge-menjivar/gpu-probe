@@ -8,7 +8,7 @@
 //! `default-features = false` to drop the `nvml-wrapper` dependency entirely.
 
 #[cfg(feature = "nvidia")]
-use crate::{GpuInfo, Vendor};
+use crate::{ComputeCapability, CudaHost, CudaVersion, GpuInfo, Vendor};
 #[cfg(feature = "nvidia")]
 use nvml_wrapper::Nvml;
 #[cfg(feature = "nvidia")]
@@ -74,7 +74,50 @@ pub(crate) fn detect() -> Vec<GpuInfo> {
     gpus
 }
 
+/// Host-wide CUDA properties, read from the same shared NVML handle as
+/// [`detect`] so the process keeps exactly one NVML owner.
+#[cfg(feature = "nvidia")]
+pub(crate) fn cuda_host() -> Option<CudaHost> {
+    let nvml = nvml()?;
+
+    // Compute capability is per-device, but consumers use it to choose a build
+    // target for the host, so device 0 is the meaningful answer.
+    let capability = nvml
+        .device_by_index(0)
+        .ok()?
+        .cuda_compute_capability()
+        .ok()?;
+    // NVML reports these as signed and a misbehaving driver can return
+    // negatives. Reject them here rather than casting them into huge unsigned
+    // values and making every caller re-derive the check.
+    let compute_capability = ComputeCapability {
+        major: u32::try_from(capability.major).ok()?,
+        minor: u32::try_from(capability.minor).ok()?,
+    };
+
+    let packed = nvml.sys_cuda_driver_version().ok()?;
+    if packed <= 0 {
+        return None;
+    }
+    // NVML packs this as `major * 1000 + minor * 10`; let the binding unpack it
+    // rather than open-coding the arithmetic.
+    let driver_version = CudaVersion {
+        major: u32::try_from(nvml_wrapper::cuda_driver_version_major(packed)).ok()?,
+        minor: u32::try_from(nvml_wrapper::cuda_driver_version_minor(packed)).ok()?,
+    };
+
+    Some(CudaHost {
+        compute_capability,
+        driver_version,
+    })
+}
+
 #[cfg(not(feature = "nvidia"))]
 pub(crate) fn detect() -> Vec<crate::GpuInfo> {
     Vec::new()
+}
+
+#[cfg(not(feature = "nvidia"))]
+pub(crate) fn cuda_host() -> Option<crate::CudaHost> {
+    None
 }
