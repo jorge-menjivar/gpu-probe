@@ -79,32 +79,22 @@ pub struct GpuInfo {
     pub free_bytes: Option<u64>,
     /// Used device memory in bytes, when known.
     pub used_bytes: Option<u64>,
-    /// AMD architecture target, when the KFD driver reports one. `None` for
-    /// every non-AMD GPU, and for AMD cards on a kernel without KFD.
+    /// The architecture a prebuilt artifact must target to run on this GPU:
+    /// [`ArchTarget::Gfx`] on AMD, from KFD sysfs, and [`ArchTarget::Sm`] on
+    /// NVIDIA, from NVML.
     ///
-    /// The AMD half of a pair with [`GpuInfo::compute_capability`]: both name
-    /// the architecture a prebuilt artifact has to target, so a caller picking
-    /// a build checks whichever one its vendor populates.
-    pub gfx_target: Option<GfxTarget>,
-    /// NVIDIA compute capability, when NVML reports one. `None` for every
-    /// non-NVIDIA GPU, and when the `nvidia` feature is disabled.
-    ///
-    /// The NVIDIA half of the pair described on [`GpuInfo::gfx_target`]. The
-    /// same value is on [`CudaHost`], which reports it for device 0 alongside
-    /// the host's driver version; this field is per-GPU.
-    pub compute_capability: Option<ComputeCapability>,
+    /// `None` when neither driver reports one — an Apple or Intel GPU, an AMD
+    /// card on a kernel without KFD, or the `nvidia` feature disabled. The
+    /// NVIDIA value also appears on [`CudaHost`], which reports device 0's
+    /// alongside the host driver version; this field is per-GPU.
+    pub arch_target: Option<ArchTarget>,
 }
 
 impl std::fmt::Display for GpuInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} ({}", self.name, self.vendor)?;
-        if let Some(gfx) = self.gfx_target {
-            write!(f, ", {gfx}")?;
-        }
-        // `sm_89`, not the bare `8.9` `ComputeCapability` renders, which would
-        // read as a version number in this position.
-        if let Some(cc) = self.compute_capability {
-            write!(f, ", sm_{}{}", cc.major, cc.minor)?;
+        if let Some(arch) = self.arch_target {
+            write!(f, ", {arch}")?;
         }
         write!(f, "): {:.1} GiB total", gib(self.total_bytes))?;
         if let Some(free) = self.free_bytes {
@@ -190,6 +180,67 @@ impl std::fmt::Display for GfxTarget {
     /// single hex digits there, so `9.0.10` renders as `gfx90a`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "gfx{}{:x}{:x}", self.major, self.minor, self.step)
+    }
+}
+
+/// The architecture a prebuilt GPU artifact must target.
+///
+/// Each vendor names this differently but uses it the same way — to select a
+/// build the device can actually run — so one field carries whichever form
+/// applies. A GPU has at most one, which the type enforces.
+///
+/// ```
+/// use gpu_probe::{ArchTarget, GfxTarget};
+///
+/// let target = ArchTarget::Gfx(GfxTarget::new(10, 1, 3));
+/// assert_eq!(target.to_string(), "gfx1013");
+/// assert_eq!(target.gfx(), Some(GfxTarget::new(10, 1, 3)));
+/// assert_eq!(target.sm(), None);
+/// ```
+///
+/// Deliberately not `Ord`: comparing an AMD target against an NVIDIA one has no
+/// meaning. Order within a vendor by matching out [`GfxTarget`] or
+/// [`ComputeCapability`], both of which are ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ArchTarget {
+    /// AMD: the `--offload-arch` value a `ROCm`/HIP code object is built for.
+    Gfx(GfxTarget),
+    /// NVIDIA: the compute capability a CUDA artifact is built for.
+    Sm(ComputeCapability),
+}
+
+impl ArchTarget {
+    /// The AMD target, or `None` when this names another vendor's.
+    #[must_use]
+    pub const fn gfx(self) -> Option<GfxTarget> {
+        match self {
+            Self::Gfx(target) => Some(target),
+            Self::Sm(_) => None,
+        }
+    }
+
+    /// The NVIDIA compute capability, or `None` when this names another
+    /// vendor's.
+    #[must_use]
+    pub const fn sm(self) -> Option<ComputeCapability> {
+        match self {
+            Self::Sm(capability) => Some(capability),
+            Self::Gfx(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ArchTarget {
+    /// Renders in the form each vendor's toolchain expects: `gfx1013` for
+    /// `--offload-arch`, `sm_89` for CUDA.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gfx(target) => write!(f, "{target}"),
+            Self::Sm(capability) => {
+                write!(f, "sm_{}{}", capability.major, capability.minor)
+            }
+        }
     }
 }
 
@@ -514,8 +565,7 @@ mod tests {
             total_bytes: 24 * 1024 * 1024 * 1024,
             free_bytes: Some(12 * 1024 * 1024 * 1024),
             used_bytes: Some(12 * 1024 * 1024 * 1024),
-            gfx_target: None,
-            compute_capability: None,
+            arch_target: None,
         };
         let shown = gpu.to_string();
         assert!(shown.contains("NVIDIA"));
@@ -531,8 +581,7 @@ mod tests {
             total_bytes: 8 * 1024 * 1024 * 1024,
             free_bytes: None,
             used_bytes: None,
-            gfx_target: None,
-            compute_capability: None,
+            arch_target: None,
         };
         let shown = gpu.to_string();
         assert!(shown.contains("8.0 GiB total"));
@@ -547,8 +596,7 @@ mod tests {
             total_bytes: 15 * 1024 * 1024 * 1024,
             free_bytes: None,
             used_bytes: None,
-            gfx_target: Some(GfxTarget::new(10, 1, 3)),
-            compute_capability: None,
+            arch_target: Some(ArchTarget::Gfx(GfxTarget::new(10, 1, 3))),
         };
         assert!(gpu.to_string().contains("(AMD, gfx1013)"));
     }
@@ -561,10 +609,34 @@ mod tests {
             total_bytes: 24 * 1024 * 1024 * 1024,
             free_bytes: None,
             used_bytes: None,
-            gfx_target: None,
-            compute_capability: Some(ComputeCapability::new(8, 9)),
+            arch_target: Some(ArchTarget::Sm(ComputeCapability::new(8, 9))),
         };
         assert!(gpu.to_string().contains("(NVIDIA, sm_89)"));
+    }
+
+    #[test]
+    fn arch_target_unwraps_only_its_own_vendor() {
+        let amd = ArchTarget::Gfx(GfxTarget::new(10, 1, 3));
+        assert_eq!(amd.gfx(), Some(GfxTarget::new(10, 1, 3)));
+        assert_eq!(amd.sm(), None);
+
+        let nvidia = ArchTarget::Sm(ComputeCapability::new(8, 9));
+        assert_eq!(nvidia.sm(), Some(ComputeCapability::new(8, 9)));
+        assert_eq!(nvidia.gfx(), None);
+    }
+
+    #[test]
+    fn arch_target_renders_per_vendor_toolchain() {
+        // `sm_89`, not the bare `8.9` `ComputeCapability` renders on its own,
+        // which would read as a version number in this position.
+        assert_eq!(
+            ArchTarget::Sm(ComputeCapability::new(8, 9)).to_string(),
+            "sm_89"
+        );
+        assert_eq!(
+            ArchTarget::Gfx(GfxTarget::new(10, 1, 3)).to_string(),
+            "gfx1013"
+        );
     }
 
     #[test]
@@ -610,8 +682,7 @@ mod tests {
             total_bytes: 25 * 1024 * 1024 * 1024 + 256 * 1024 * 1024,
             free_bytes: None,
             used_bytes: None,
-            gfx_target: None,
-            compute_capability: None,
+            arch_target: None,
         };
         assert!(gpu.to_string().contains("25.2 GiB total"));
     }
@@ -679,8 +750,7 @@ mod tests {
             total_bytes: 16 * 1024 * 1024 * 1024,
             free_bytes: None,
             used_bytes: None,
-            gfx_target: None,
-            compute_capability: None,
+            arch_target: None,
         };
         assert_eq!(base.clone(), base);
         let mut other = base.clone();

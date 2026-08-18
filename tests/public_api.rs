@@ -55,19 +55,17 @@ fn detected_gpus_satisfy_invariants() {
 }
 
 #[test]
-fn gfx_target_is_amd_only_and_publicly_usable() {
+fn gfx_target_is_publicly_usable() {
     // `GfxTarget` is part of the public API and `Copy`/`Ord`/`Display`.
     let target = gpu_probe::GfxTarget::new(10, 1, 3);
     assert_eq!(target.to_string(), "gfx1013");
     assert!(target >= gpu_probe::GfxTarget::new(10, 1, 0));
 
+    // KFD may be absent even on AMD, so a target is never required — but any
+    // reported one must be a usable `--offload-arch` value. That it is AMD-only
+    // is asserted in `arch_target_matches_its_vendor`.
     for gpu in gpu_probe::detect() {
-        if gpu.vendor != gpu_probe::Vendor::Amd {
-            assert!(gpu.gfx_target.is_none(), "only AMD GPUs carry a gfx target");
-        }
-        // KFD may be absent even on AMD, so a target is never required — but
-        // any reported one must render as a usable `--offload-arch` value.
-        if let Some(gfx) = gpu.gfx_target {
+        if let Some(gfx) = gpu.arch_target.and_then(gpu_probe::ArchTarget::gfx) {
             assert!(gfx.to_string().starts_with("gfx"));
             assert!(gfx.major > 0, "gfx target 0 marks a CPU node, not a GPU");
         }
@@ -75,19 +73,28 @@ fn gfx_target_is_amd_only_and_publicly_usable() {
 }
 
 #[test]
-fn architecture_targets_are_vendor_exclusive() {
-    // `gfx_target` and `compute_capability` are counterparts: a GPU reports the
-    // one its vendor defines, never both.
+fn arch_target_matches_its_vendor() {
+    // `ArchTarget` makes "at most one architecture target" structural — it can
+    // no longer be constructed with both. What still needs asserting is that
+    // the variant lines up with the vendor that reported it.
     for gpu in gpu_probe::detect() {
-        assert!(
-            gpu.gfx_target.is_none() || gpu.compute_capability.is_none(),
-            "a GPU cannot have both an AMD and an NVIDIA architecture target",
-        );
-        if gpu.vendor != gpu_probe::Vendor::Nvidia {
-            assert!(
-                gpu.compute_capability.is_none(),
-                "only NVIDIA GPUs carry a compute capability",
-            );
+        match gpu.arch_target {
+            Some(target) if target.gfx().is_some() => {
+                assert_eq!(gpu.vendor, gpu_probe::Vendor::Amd, "gfx is AMD-only");
+            }
+            Some(target) if target.sm().is_some() => {
+                assert_eq!(
+                    gpu.vendor,
+                    gpu_probe::Vendor::Nvidia,
+                    "compute capability is NVIDIA-only",
+                );
+            }
+            // A future variant for another vendor lands here.
+            Some(_) | None => {}
+        }
+        // Whatever it is, it must render as something a toolchain accepts.
+        if let Some(target) = gpu.arch_target {
+            assert!(!target.to_string().is_empty());
         }
     }
 }

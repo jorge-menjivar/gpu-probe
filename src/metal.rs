@@ -57,8 +57,7 @@ fn parse_system_profiler(text: &str) -> Vec<crate::GpuInfo> {
                 total_bytes: 0,
                 free_bytes: None,
                 used_bytes: None,
-                gfx_target: None,
-                compute_capability: None,
+                arch_target: None,
             });
         } else if let Some(gpu) = gpus.last_mut() {
             if let Some(v) = line.strip_prefix("Vendor:") {
@@ -108,8 +107,7 @@ pub(crate) fn detect() -> Vec<crate::GpuInfo> {
             total_bytes: mem,
             free_bytes: None,
             used_bytes: None,
-            gfx_target: None,
-            compute_capability: None,
+            arch_target: None,
         });
     }
     gpus
