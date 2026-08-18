@@ -49,3 +49,8 @@ coverage *args:
 coverage-lcov:
     cargo llvm-cov --all-features --remap-path-prefix --ignore-filename-regex 'tests/' --lcov --output-path lcov.info
     cargo llvm-cov report --summary-only --ignore-filename-regex 'tests/'
+
+# Build the dev-only watch example and follow it live (development testing only).
+watch interval="1":
+    cargo build --example watch
+    watch -n {{ interval }} target/debug/examples/watch
