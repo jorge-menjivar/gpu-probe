@@ -179,7 +179,17 @@ pub(crate) fn detect() -> Vec<crate::GpuInfo> {
             || format!("{vendor} GPU ({card})"),
             |asic| format!("{vendor} {asic}"),
         );
-        let arch_target = node.map(|n| crate::ArchTarget::Gfx(n.gfx_target));
+        let arch_target = match vendor {
+            crate::Vendor::Amd => node.map(|n| crate::ArchTarget::Gfx(n.gfx_target)),
+            // Intel publishes no architecture anywhere readable, so it comes
+            // from the PCI device id this same directory already exposes.
+            crate::Vendor::Intel => std::fs::read_to_string(device.join("device"))
+                .ok()
+                .and_then(|id| crate::intel::parse_device_id(&id))
+                .and_then(crate::intel::arch_for_device_id)
+                .map(crate::ArchTarget::Xe),
+            _ => None,
+        };
 
         if let Some(vram_total) = read_bytes(&device, "mem_info_vram_total") {
             // Dedicated VRAM — plus the GTT pool when this is an APU carveout.

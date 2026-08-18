@@ -52,7 +52,7 @@ pub struct GpuInfo {
     pub total_bytes: u64,
     pub free_bytes: Option<u64>,
     pub used_bytes: Option<u64>,
-    pub arch_target: Option<ArchTarget>,  // Gfx(gfx1013) | Sm(sm_86)
+    pub arch_target: Option<ArchTarget>,  // Gfx | Sm | Xe | Apple
 }
 ```
 
@@ -87,12 +87,28 @@ for gpu in gpu_probe::detect() {
         Some(ArchTarget::Gfx(gfx)) => println!("build {gfx}"),   // gfx1013
         // NVIDIA: the CUDA compute capability
         Some(ArchTarget::Sm(sm)) => println!("build sm_{}{}", sm.major, sm.minor),
+        // Intel: the architecture family
+        Some(ArchTarget::Xe(arch)) => println!("build {arch}"),  // xe-hpg
+        // Apple: the Metal feature tier
+        Some(ArchTarget::Apple(family)) => println!("targets {family}"),  // apple8
+        // `ArchTarget` is #[non_exhaustive], so a wildcard is required — new
+        // vendors land as new variants without breaking this match.
         _ => {}
     }
 }
 ```
 
-`gfx()` and `sm()` pull out one vendor's form when that's all you need:
+The four are not equally precise, and the table says why:
+
+| vendor | value | source | selects a build? |
+|:-------|:------|:-------|:-----------------|
+| AMD | `gfx1013` | KFD sysfs | yes — `--offload-arch` |
+| NVIDIA | `sm_86` | NVML | yes — `-arch` |
+| Intel | `xe-hpg` | PCI device id | family only; `ocloc -device` is finer |
+| Apple | `apple8` | chip name | no — a capability tier, `.metallib` is not per-family |
+
+`gfx()`, `sm()`, `xe()`, and `apple()` pull out one vendor's form when that's
+all you need:
 
 ```rust
 let amd_targets: Vec<_> = gpu_probe::detect()
@@ -114,6 +130,12 @@ let rdna2_or_newer = GfxTarget::new(10, 3, 0);
 
 The AMD form comes from KFD sysfs, published by the `amdgpu` kernel driver —
 **no ROCm install is required**, and it is reported on machines that have none.
+
+The Intel and Apple forms are derived rather than queried, because neither
+platform publishes an architecture a caller can read: Intel's comes from a PCI
+device id table, Apple's from the chip name. Both report `None` for anything
+their table does not recognise rather than guessing, and **neither has been
+verified against real hardware yet**.
 
 ### Host toolchains
 

@@ -29,6 +29,7 @@
 //! ```
 
 mod drm;
+mod intel;
 mod kfd;
 mod metal;
 mod nvidia;
@@ -183,6 +184,81 @@ impl std::fmt::Display for GfxTarget {
     }
 }
 
+/// Intel GPU architecture family, e.g. [`IntelArch::XeHpg`] for an Arc A-series
+/// card.
+///
+/// Coarser than its AMD and NVIDIA counterparts by necessity. Neither `i915`
+/// nor `xe` publishes an architecture anywhere readable, so this is derived
+/// from the PCI device id, which identifies the family reliably but not the
+/// exact product. The `ocloc -device` value for an ahead-of-time build (`dg2`,
+/// `acm-g10`, …) is more specific than this; treat it as "which generation is
+/// this" rather than a literal compiler argument.
+///
+/// Deliberately not ordered: "newer" across integrated and discrete lines is
+/// not a total order worth implying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum IntelArch {
+    /// Xe-LP — Tiger Lake, Rocket Lake, Alder Lake, Raptor Lake, DG1.
+    XeLp,
+    /// Xe-HPG — DG2, sold as Arc A-series (Alchemist).
+    XeHpg,
+    /// Xe-HPC — Ponte Vecchio, sold as Data Center GPU Max.
+    XeHpc,
+    /// Xe-LPG — Meteor Lake and Arrow Lake integrated graphics.
+    XeLpg,
+    /// Xe2 — Lunar Lake integrated graphics, and Arc B-series (Battlemage).
+    Xe2,
+}
+
+impl std::fmt::Display for IntelArch {
+    /// Renders as the lowercase family name — `xe-hpg`, `xe2`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            IntelArch::XeLp => "xe-lp",
+            IntelArch::XeHpg => "xe-hpg",
+            IntelArch::XeHpc => "xe-hpc",
+            IntelArch::XeLpg => "xe-lpg",
+            IntelArch::Xe2 => "xe2",
+        })
+    }
+}
+
+/// Apple GPU family, e.g. `apple8` for an M2.
+///
+/// The Metal feature tier a shader can be compiled against
+/// (`MTLGPUFamily.apple8`). Ordered, so a minimum can be expressed:
+///
+/// ```
+/// use gpu_probe::AppleFamily;
+/// assert!(AppleFamily::new(9) >= AppleFamily::new(8));
+/// ```
+///
+/// Unlike a `gfx` target or a compute capability, this does not select a build
+/// artifact — a `.metallib` is not per-family — so it reads as a capability
+/// tier. It is derived from the chip name `system_profiler` reports, since
+/// querying it properly means linking Metal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AppleFamily {
+    /// Family generation — the `8` in `apple8`.
+    pub generation: u32,
+}
+
+impl AppleFamily {
+    /// Create a family from its generation number.
+    #[must_use]
+    pub const fn new(generation: u32) -> Self {
+        Self { generation }
+    }
+}
+
+impl std::fmt::Display for AppleFamily {
+    /// Renders as `apple8`, matching the `MTLGPUFamily` name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "apple{}", self.generation)
+    }
+}
+
 /// The architecture a prebuilt GPU artifact must target.
 ///
 /// Each vendor names this differently but uses it the same way — to select a
@@ -208,6 +284,11 @@ pub enum ArchTarget {
     Gfx(GfxTarget),
     /// NVIDIA: the compute capability a CUDA artifact is built for.
     Sm(ComputeCapability),
+    /// Intel: the GPU architecture family, from the PCI device id.
+    Xe(IntelArch),
+    /// Apple: the Metal GPU family. A capability tier rather than a build
+    /// target — see [`AppleFamily`].
+    Apple(AppleFamily),
 }
 
 impl ArchTarget {
@@ -216,7 +297,7 @@ impl ArchTarget {
     pub const fn gfx(self) -> Option<GfxTarget> {
         match self {
             Self::Gfx(target) => Some(target),
-            Self::Sm(_) => None,
+            _ => None,
         }
     }
 
@@ -226,7 +307,26 @@ impl ArchTarget {
     pub const fn sm(self) -> Option<ComputeCapability> {
         match self {
             Self::Sm(capability) => Some(capability),
-            Self::Gfx(_) => None,
+            _ => None,
+        }
+    }
+
+    /// The Intel architecture family, or `None` when this names another
+    /// vendor's.
+    #[must_use]
+    pub const fn xe(self) -> Option<IntelArch> {
+        match self {
+            Self::Xe(arch) => Some(arch),
+            _ => None,
+        }
+    }
+
+    /// The Apple GPU family, or `None` when this names another vendor's.
+    #[must_use]
+    pub const fn apple(self) -> Option<AppleFamily> {
+        match self {
+            Self::Apple(family) => Some(family),
+            _ => None,
         }
     }
 }
@@ -240,6 +340,8 @@ impl std::fmt::Display for ArchTarget {
             Self::Sm(capability) => {
                 write!(f, "sm_{}{}", capability.major, capability.minor)
             }
+            Self::Xe(arch) => write!(f, "{arch}"),
+            Self::Apple(family) => write!(f, "{family}"),
         }
     }
 }
@@ -623,6 +725,42 @@ mod tests {
         let nvidia = ArchTarget::Sm(ComputeCapability::new(8, 9));
         assert_eq!(nvidia.sm(), Some(ComputeCapability::new(8, 9)));
         assert_eq!(nvidia.gfx(), None);
+    }
+
+    #[test]
+    fn arch_target_accessors_are_exclusive_across_all_vendors() {
+        let targets = [
+            ArchTarget::Gfx(GfxTarget::new(10, 1, 3)),
+            ArchTarget::Sm(ComputeCapability::new(8, 9)),
+            ArchTarget::Xe(IntelArch::XeHpg),
+            ArchTarget::Apple(AppleFamily::new(8)),
+        ];
+        for target in targets {
+            let hits = [
+                target.gfx().is_some(),
+                target.sm().is_some(),
+                target.xe().is_some(),
+                target.apple().is_some(),
+            ];
+            assert_eq!(
+                hits.iter().filter(|hit| **hit).count(),
+                1,
+                "{target} must answer exactly one accessor",
+            );
+        }
+    }
+
+    #[test]
+    fn intel_and_apple_targets_render_by_family() {
+        assert_eq!(ArchTarget::Xe(IntelArch::XeHpg).to_string(), "xe-hpg");
+        assert_eq!(ArchTarget::Xe(IntelArch::Xe2).to_string(), "xe2");
+        assert_eq!(ArchTarget::Apple(AppleFamily::new(8)).to_string(), "apple8");
+    }
+
+    #[test]
+    fn apple_families_are_ordered() {
+        assert!(AppleFamily::new(9) > AppleFamily::new(8));
+        assert!(AppleFamily::new(8) > AppleFamily::new(7));
     }
 
     #[test]

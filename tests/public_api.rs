@@ -89,6 +89,16 @@ fn arch_target_matches_its_vendor() {
                     "compute capability is NVIDIA-only",
                 );
             }
+            Some(target) if target.xe().is_some() => {
+                assert_eq!(gpu.vendor, gpu_probe::Vendor::Intel, "xe is Intel-only");
+            }
+            Some(target) if target.apple().is_some() => {
+                assert_eq!(
+                    gpu.vendor,
+                    gpu_probe::Vendor::Apple,
+                    "a Metal family is Apple-only",
+                );
+            }
             // A future variant for another vendor lands here.
             Some(_) | None => {}
         }
