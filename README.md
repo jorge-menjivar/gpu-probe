@@ -52,8 +52,7 @@ pub struct GpuInfo {
     pub total_bytes: u64,
     pub free_bytes: Option<u64>,
     pub used_bytes: Option<u64>,
-    pub gfx_target: Option<GfxTarget>,                  // AMD:    gfx1013
-    pub compute_capability: Option<ComputeCapability>,  // NVIDIA: sm_86
+    pub arch_target: Option<ArchTarget>,  // Gfx | Sm | Xe | Apple
 }
 ```
 
@@ -75,22 +74,52 @@ Or run the bundled example: `cargo run --example detect`.
 
 ### Architecture targets
 
-Which prebuilt artifact a GPU can run is reported per device. The two fields are
-counterparts — a GPU carries whichever one its vendor defines, never both:
+Which prebuilt artifact a GPU can run is reported per device, as one field
+carrying whichever form the vendor uses. A GPU has at most one, enforced by the
+type rather than by convention:
 
 ```rust
+use gpu_probe::ArchTarget;
+
 for gpu in gpu_probe::detect() {
-    match (gpu.gfx_target, gpu.compute_capability) {
-        // AMD: the ROCm/HIP `--offload-arch` value, e.g. gfx1013
-        (Some(gfx), _) => println!("build {gfx}"),
-        // NVIDIA: the CUDA `sm_` value, e.g. sm_86
-        (_, Some(sm)) => println!("build sm_{}{}", sm.major, sm.minor),
-        (None, None) => {}
+    match gpu.arch_target {
+        // AMD: the ROCm/HIP `--offload-arch` value
+        Some(ArchTarget::Gfx(gfx)) => println!("build {gfx}"),   // gfx1013
+        // NVIDIA: the CUDA compute capability
+        Some(ArchTarget::Sm(sm)) => println!("build sm_{}{}", sm.major, sm.minor),
+        // Intel: the architecture family
+        Some(ArchTarget::Xe(arch)) => println!("build {arch}"),  // xe-hpg
+        // Apple: the Metal feature tier
+        Some(ArchTarget::Apple(family)) => println!("targets {family}"),  // apple8
+        // `ArchTarget` is #[non_exhaustive], so a wildcard is required — new
+        // vendors land as new variants without breaking this match.
+        _ => {}
     }
 }
 ```
 
-Both order `major` first, so comparing against a minimum works directly:
+The four are not equally precise, and the table says why:
+
+| vendor | value | source | selects a build? |
+|:-------|:------|:-------|:-----------------|
+| AMD | `gfx1013` | KFD sysfs | yes — `--offload-arch` |
+| NVIDIA | `sm_86` | NVML | yes — `-arch` |
+| Intel | `xe-hpg` | PCI device id | family only; `ocloc -device` is finer |
+| Apple | `apple8` | chip name | no — a capability tier, `.metallib` is not per-family |
+
+`gfx()`, `sm()`, `xe()`, and `apple()` pull out one vendor's form when that's
+all you need:
+
+```rust
+let amd_targets: Vec<_> = gpu_probe::detect()
+    .iter()
+    .filter_map(|gpu| gpu.arch_target.and_then(ArchTarget::gfx))
+    .collect();
+```
+
+`ArchTarget` itself is not ordered — comparing an AMD target to an NVIDIA one is
+meaningless — but `GfxTarget` and `ComputeCapability` both order `major` first,
+so a minimum requirement compares directly:
 
 ```rust
 use gpu_probe::{ComputeCapability, GfxTarget};
@@ -99,8 +128,14 @@ let ampere_or_newer = ComputeCapability::new(8, 0);
 let rdna2_or_newer = GfxTarget::new(10, 3, 0);
 ```
 
-`gfx_target` comes from KFD sysfs, published by the `amdgpu` kernel driver — **no
-ROCm install is required**, and it is reported on machines that have none.
+The AMD form comes from KFD sysfs, published by the `amdgpu` kernel driver —
+**no ROCm install is required**, and it is reported on machines that have none.
+
+The Intel and Apple forms are derived rather than queried, because neither
+platform publishes an architecture a caller can read: Intel's comes from a PCI
+device id table, Apple's from the chip name. Both report `None` for anything
+their table does not recognise rather than guessing, and **neither has been
+verified against real hardware yet**.
 
 ### Host toolchains
 
@@ -152,18 +187,18 @@ prefixes for the other two. A distro shipping ROCm into `/usr` rather than
 worth confirming".
 
 What `None` does **not** tell you is that the GPU is unusable. The kernel and
-userspace halves are independent: `gfx_target` comes from the `amdgpu` driver
+userspace halves are independent: `arch_target` comes from the `amdgpu` driver
 and is reported with no ROCm installed at all.
 
 `cuda_host().compute_capability` is device 0's — the same value that GPU reports
-in its own `compute_capability` field.
+as `ArchTarget::Sm` in its own `arch_target`.
 
 ### Is a device ready for a model?
 
 Readiness is four separate questions, and the pieces above answer each one:
 
 ```rust
-use gpu_probe::GfxTarget;
+use gpu_probe::{ArchTarget, GfxTarget};
 
 let need = 16 * 1024 * 1024 * 1024; // 16 GiB
 let built_for = GfxTarget::new(10, 1, 3); // this artifact is gfx1013
@@ -173,8 +208,8 @@ let runtime_ready = gpu_probe::rocm_host().is_some();
 
 let device_ready = gpu_probe::detect().iter().any(|gpu| {
     // The kernel driver has to expose the GPU for compute — on AMD, a
-    // `gfx_target` at all means KFD is live.
-    gpu.gfx_target == Some(built_for)
+    // target at all means KFD is live.
+    gpu.arch_target == Some(ArchTarget::Gfx(built_for))
         // And the weights have to fit.
         && gpu.free_bytes.unwrap_or(gpu.total_bytes) >= need
 });
@@ -193,7 +228,7 @@ three.
 ## Notes
 
 - `total_bytes` is dedicated VRAM on discrete GPUs. On integrated/unified GPUs (Intel iGPUs, AMD APUs, Apple Silicon) it's the shared system-memory ceiling, and `free_bytes` / `used_bytes` are usually `None`.
-- AMD APUs are a special case: their `mem_info_vram_total` is only a BIOS carveout (512 MiB on a BC-250), so `total_bytes` adds the GTT pool they really allocate from — sized by the kernel's `ttm.pages_limit` — and `free_bytes` / `used_bytes` cover both pools.
+- AMD APUs are a special case: their `mem_info_vram_total` is only a BIOS carveout (512 MiB on a BC-250), so `total_bytes` adds the GTT pool they really allocate from — sized by the kernel's `ttm.pages_limit` — and `free_bytes` / `used_bytes` cover both pools. The result matches Vulkan/RADV to the byte; ROCm reports ~512 MiB less, since KFD publishes only the GTT-backed bank.
 - AMD GPU names come from the KFD ASIC codename (`AMD cyan_skillfish`), falling back to the DRM node (`AMD GPU (card1)`) when KFD reports none.
 - `oneapi_host()` covers the **toolkit**, not the GPU runtime: a host using a distro-packaged Level Zero driver with no toolkit reports `None`, since reading that runtime's version needs linking rather than a file read. Not yet verified against a real install.
 - NVIDIA detection reads NVML from the installed driver at runtime — the CUDA toolkit is not required.

@@ -55,10 +55,9 @@ fn main() {
         println!("[{index}] {} · {}", gpu.name, gpu.vendor);
         // The artifact-selection target, whichever form this vendor reports:
         // `gfx1013` for ROCm/HIP, `sm_89` for CUDA.
-        match (gpu.gfx_target, gpu.compute_capability) {
-            (Some(gfx), _) => println!("     arch   {gfx:>10}"),
-            (_, Some(cc)) => println!("     arch   {:>10}", format!("sm_{}{}", cc.major, cc.minor)),
-            (None, None) => println!("     arch      unavailable"),
+        match gpu.arch_target {
+            Some(arch) => println!("     arch   {:>10}", arch.to_string()),
+            None => println!("     arch      unavailable"),
         }
         println!("     total  {:>10}", gib(gpu.total_bytes));
         match gpu.used_bytes {

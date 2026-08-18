@@ -8,7 +8,7 @@
 //! `default-features = false` to drop the `nvml-wrapper` dependency entirely.
 
 #[cfg(feature = "nvidia")]
-use crate::{ComputeCapability, CudaHost, CudaVersion, GpuInfo, Vendor};
+use crate::{ArchTarget, ComputeCapability, CudaHost, CudaVersion, GpuInfo, Vendor};
 #[cfg(feature = "nvidia")]
 use nvml_wrapper::Nvml;
 #[cfg(feature = "nvidia")]
@@ -83,8 +83,7 @@ pub(crate) fn detect() -> Vec<GpuInfo> {
             total_bytes: memory.total,
             free_bytes: Some(memory.free),
             used_bytes: Some(memory.used),
-            gfx_target: None,
-            compute_capability: device_compute_capability(&device),
+            arch_target: device_compute_capability(&device).map(ArchTarget::Sm),
         });
     }
     gpus

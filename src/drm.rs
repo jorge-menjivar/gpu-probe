@@ -75,6 +75,21 @@ const INTEGRATED_VRAM_MAX: u64 = 2 * 1024 * 1024 * 1024;
 ///
 /// `used` is `None` unless both pools report it — summing only the half that
 /// answered would understate usage and so overstate free memory.
+///
+/// The carveout is counted, not dropped, which is worth knowing because the two
+/// runtimes on such a part disagree. On a BC-250 with a 512 MiB carveout over a
+/// 14 GiB GTT pool:
+///
+/// ```text
+/// vram_total + gtt_total   15_569_256_448   what this reports
+/// Vulkan (RADV) heaps      15_569_256_448   identical, to the byte
+/// KFD memory bank          15_032_385_536   GTT alone, carveout excluded
+/// ```
+///
+/// `ROCm` sees the smaller figure because KFD publishes only the GTT-backed
+/// bank. Counting the carveout matches Vulkan exactly, and costs nothing in
+/// accuracy: its usage is folded into `used` as well, so a carveout consumed by
+/// the framebuffer is subtracted straight back out of free memory.
 #[allow(dead_code)] // used on Linux + in tests; unused on other targets
 fn fold_gtt(
     vram_total: u64,
@@ -164,7 +179,17 @@ pub(crate) fn detect() -> Vec<crate::GpuInfo> {
             || format!("{vendor} GPU ({card})"),
             |asic| format!("{vendor} {asic}"),
         );
-        let gfx_target = node.map(|n| n.gfx_target);
+        let arch_target = match vendor {
+            crate::Vendor::Amd => node.map(|n| crate::ArchTarget::Gfx(n.gfx_target)),
+            // Intel publishes no architecture anywhere readable, so it comes
+            // from the PCI device id this same directory already exposes.
+            crate::Vendor::Intel => std::fs::read_to_string(device.join("device"))
+                .ok()
+                .and_then(|id| crate::intel::parse_device_id(&id))
+                .and_then(crate::intel::arch_for_device_id)
+                .map(crate::ArchTarget::Xe),
+            _ => None,
+        };
 
         if let Some(vram_total) = read_bytes(&device, "mem_info_vram_total") {
             // Dedicated VRAM — plus the GTT pool when this is an APU carveout.
@@ -180,8 +205,7 @@ pub(crate) fn detect() -> Vec<crate::GpuInfo> {
                 total_bytes: total,
                 free_bytes: used.map(|u| total.saturating_sub(u)),
                 used_bytes: used,
-                gfx_target,
-                compute_capability: None,
+                arch_target,
             });
         } else {
             // Integrated GPU with no VRAM pool at all (typical Intel iGPU):
@@ -196,8 +220,7 @@ pub(crate) fn detect() -> Vec<crate::GpuInfo> {
                     total_bytes: total,
                     free_bytes: None,
                     used_bytes: None,
-                    gfx_target,
-                    compute_capability: None,
+                    arch_target,
                 });
             }
         }

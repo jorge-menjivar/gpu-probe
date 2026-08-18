@@ -40,6 +40,33 @@ fn parse_memsize(content: &str) -> Option<u64> {
 }
 
 /// Parse plain-text `system_profiler SPDisplaysDataType` output into one
+/// Metal GPU family for an Apple Silicon chip name — `Apple M2 Pro` is
+/// `apple8`.
+///
+/// Derived from the name rather than queried, because the real source is
+/// `MTLDevice.supportsFamily()`, which means linking Metal. Chips this table
+/// does not know report `None`: a wrong family would be acted on, an absent one
+/// would not. Non-Apple chipsets (`AMD Radeon Pro 5500M` on an Intel Mac) fall
+/// out naturally, since the prefix will not match.
+///
+/// **Unverified against real hardware** — there is no Mac to test this on.
+#[allow(dead_code)] // used on macOS + in tests; unused on other targets
+fn apple_family(name: &str) -> Option<crate::AppleFamily> {
+    let rest = name.strip_prefix("Apple M")?;
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let chip: u32 = rest[..end].parse().ok()?;
+    let generation = match chip {
+        1 => 7,
+        2 => 8,
+        // M3 introduced apple9; M4 supports it too, and no apple10 exists yet.
+        3 | 4 => 9,
+        _ => return None,
+    };
+    Some(crate::AppleFamily::new(generation))
+}
+
 /// [`GpuInfo`](crate::GpuInfo) per "Chipset Model:" block. `total_bytes` is `0`
 /// when no VRAM line is present (Apple Silicon unified memory); callers
 /// backfill it from physical memory.
@@ -51,14 +78,14 @@ fn parse_system_profiler(text: &str) -> Vec<crate::GpuInfo> {
     for raw in text.lines() {
         let line = raw.trim();
         if let Some(name) = line.strip_prefix("Chipset Model:") {
+            let name = name.trim();
             gpus.push(GpuInfo {
-                name: name.trim().to_string(),
+                name: name.to_string(),
                 vendor: Vendor::Apple,
                 total_bytes: 0,
                 free_bytes: None,
                 used_bytes: None,
-                gfx_target: None,
-                compute_capability: None,
+                arch_target: apple_family(name).map(crate::ArchTarget::Apple),
             });
         } else if let Some(gpu) = gpus.last_mut() {
             if let Some(v) = line.strip_prefix("Vendor:") {
@@ -108,8 +135,7 @@ pub(crate) fn detect() -> Vec<crate::GpuInfo> {
             total_bytes: mem,
             free_bytes: None,
             used_bytes: None,
-            gfx_target: None,
-            compute_capability: None,
+            arch_target: None,
         });
     }
     gpus
@@ -135,6 +161,29 @@ pub(crate) fn detect() -> Vec<crate::GpuInfo> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn maps_apple_silicon_chips_to_metal_families() {
+        use crate::AppleFamily;
+        assert_eq!(apple_family("Apple M1"), Some(AppleFamily::new(7)));
+        assert_eq!(apple_family("Apple M1 Max"), Some(AppleFamily::new(7)));
+        assert_eq!(apple_family("Apple M2 Pro"), Some(AppleFamily::new(8)));
+        assert_eq!(apple_family("Apple M3 Ultra"), Some(AppleFamily::new(9)));
+        assert_eq!(apple_family("Apple M4"), Some(AppleFamily::new(9)));
+    }
+
+    #[test]
+    fn unknown_chips_report_no_family() {
+        // A generation this table predates must not be guessed at.
+        assert_eq!(apple_family("Apple M9"), None);
+        // Multi-digit chips must not be read as their first digit.
+        assert_eq!(apple_family("Apple M10"), None, "not M1");
+        // Intel Macs and the sysctl fallback name.
+        assert_eq!(apple_family("AMD Radeon Pro 5500M"), None);
+        assert_eq!(apple_family("Intel Iris Plus Graphics"), None);
+        assert_eq!(apple_family("Apple GPU"), None);
+        assert_eq!(apple_family(""), None);
+    }
+
     use super::*;
     use crate::Vendor;
 
