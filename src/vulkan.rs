@@ -14,11 +14,13 @@
 use crate::{VulkanHost, VulkanVersion};
 use std::path::Path;
 
-/// Where the loader looks for driver manifests. `/usr/local` first so a
-/// locally installed driver wins, matching the loader's own precedence.
+/// Where the loader looks for driver manifests. Every manifest under both
+/// directories is read; `host()` takes the highest `api_version` across the
+/// union, so this order does not affect which version wins.
 const ICD_DIRS: [&str; 2] = ["/usr/local/share/vulkan/icd.d", "/usr/share/vulkan/icd.d"];
 
-/// Loader sonames to probe, newest ABI first.
+/// Loader sonames to probe. Checked with `.any()`, so this is an unordered
+/// set, not a preference list.
 const LOADER_SONAMES: [&str; 2] = ["libvulkan.so.1", "libvulkan.so"];
 
 /// Directories the loader is normally installed into.
@@ -46,7 +48,10 @@ fn parse_icd_api_version(content: &str) -> Option<VulkanVersion> {
 
 /// Whether the Vulkan loader is installed. Presence of the shared object is
 /// the signal; nothing is opened or linked.
-#[cfg(target_os = "linux")]
+///
+/// Unconditional, like the `ROCm` and `oneAPI` probes: the paths this checks
+/// are Linux-specific and simply do not exist on other platforms, so
+/// `.exists()` is `false` there without needing a `cfg`.
 fn loader_present() -> bool {
     LIB_DIRS
         .iter()
@@ -54,17 +59,11 @@ fn loader_present() -> bool {
         .any(|path| path.exists())
 }
 
-#[cfg(not(target_os = "linux"))]
-fn loader_present() -> bool {
-    false
-}
-
 /// The highest API version any installed ICD advertises.
 ///
 /// Highest rather than lowest: a host with both a software rasterizer and a
 /// real driver can run what the real driver supports, and the consumer is
 /// choosing one build for the machine.
-#[cfg(target_os = "linux")]
 pub(crate) fn host() -> Option<VulkanHost> {
     if !loader_present() {
         return None;
@@ -79,11 +78,6 @@ pub(crate) fn host() -> Option<VulkanHost> {
         .filter_map(|content| parse_icd_api_version(&content))
         .max()?;
     Some(VulkanHost { api_version })
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn host() -> Option<VulkanHost> {
-    None
 }
 
 #[cfg(test)]
