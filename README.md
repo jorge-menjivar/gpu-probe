@@ -97,6 +97,11 @@ unusable values.
 ## Notes
 
 - `total_bytes` is dedicated VRAM on discrete GPUs. On integrated/unified GPUs (Intel iGPUs, AMD APUs, Apple Silicon) it's the shared system-memory ceiling, and `free_bytes` / `used_bytes` are usually `None`.
+- `gfx_target` and `compute_capability` are counterparts: both name the architecture a prebuilt artifact must target, one per vendor. `gfx_target` is the ROCm/HIP `--offload-arch` value (`gfx1013`, `gfx90a`, …), read from KFD sysfs with no ROCm install required; `compute_capability` is the CUDA `sm_` value from NVML. A GPU reports whichever its vendor defines, never both.
+- `cuda_host()` remains for the host-wide CUDA **driver** version, which has no per-GPU or AMD equivalent. Its `compute_capability` is device 0's, the same value that GPU reports in its own `compute_capability` field.
+- `rocm_host()` reports the installed ROCm release, read from `$ROCM_PATH/.info/version` (falling back to `/opt/rocm`) — a file read, nothing linked. It is deliberately narrower than `cuda_host()`: AMD exposes no driver version anywhere, so only the userspace install can be reported.
+- `rocm_host()` returning `None` means the ROCm **userspace** is absent — it says nothing about whether the GPU works for compute. `gfx_target` comes from the kernel driver and is reported with no ROCm installed at all.
+- AMD APUs are a special case: their `mem_info_vram_total` is only a BIOS carveout (512 MiB on a BC-250), so `total_bytes` adds the GTT pool they really allocate from — sized by the kernel's `ttm.pages_limit` — and `free_bytes` / `used_bytes` cover both pools.
 - NVIDIA detection reads NVML from the installed driver at runtime — the CUDA toolkit is not required.
 - NVML is initialized once per process and intentionally never shut down. Cycling `nvmlInit`/`nvmlShutdown` leaks a file descriptor each time, so `detect()` is safe to poll on a timer: descriptor use is flat, and each call still returns live memory values.
 

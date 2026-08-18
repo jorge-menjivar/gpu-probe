@@ -9,9 +9,14 @@
 //!   build time. Behind the default `nvidia` feature.
 //! - **AMD & Intel** (Linux): DRM sysfs under `/sys/class/drm`. Discrete cards
 //!   report dedicated VRAM; integrated GPUs report the shared system-memory
-//!   ceiling (see [`GpuInfo::total_bytes`]).
+//!   ceiling, and AMD APUs their VRAM carveout plus GTT pool (see
+//!   [`GpuInfo::total_bytes`]). AMD cards additionally report their `gfx`
+//!   target from KFD sysfs — no `ROCm` install needed.
 //! - **Apple/macOS**: `system_profiler` + `sysctl` (Apple Silicon reports
 //!   unified memory).
+//!
+//! Host toolchain properties are reported separately from any one GPU:
+//! [`cuda_host`] for the CUDA driver, [`rocm_host`] for the `ROCm` install.
 //!
 //! Detection is best-effort: [`detect`] returns an empty `Vec` when no GPU is
 //! found or the platform is unsupported — never an error.
@@ -23,8 +28,10 @@
 //! ```
 
 mod drm;
+mod kfd;
 mod metal;
 mod nvidia;
+mod rocm;
 
 /// GPU hardware vendor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,22 +67,44 @@ pub struct GpuInfo {
     /// Total memory in bytes. For discrete GPUs this is dedicated VRAM; for
     /// integrated/unified GPUs (Intel iGPUs, AMD APUs, Apple Silicon) it is the
     /// shared system-memory ceiling available to the GPU, not a dedicated pool.
+    ///
+    /// An AMD APU reports its BIOS VRAM carveout plus the GTT pool the driver
+    /// allocates from — the latter sized by the kernel's `ttm.pages_limit` —
+    /// since the carveout alone is far below what the part can actually hand
+    /// out (512 MiB of 14.5 GiB on a BC-250).
     pub total_bytes: u64,
     /// Free device memory in bytes, when known.
     pub free_bytes: Option<u64>,
     /// Used device memory in bytes, when known.
     pub used_bytes: Option<u64>,
+    /// AMD architecture target, when the KFD driver reports one. `None` for
+    /// every non-AMD GPU, and for AMD cards on a kernel without KFD.
+    ///
+    /// The AMD half of a pair with [`GpuInfo::compute_capability`]: both name
+    /// the architecture a prebuilt artifact has to target, so a caller picking
+    /// a build checks whichever one its vendor populates.
+    pub gfx_target: Option<GfxTarget>,
+    /// NVIDIA compute capability, when NVML reports one. `None` for every
+    /// non-NVIDIA GPU, and when the `nvidia` feature is disabled.
+    ///
+    /// The NVIDIA half of the pair described on [`GpuInfo::gfx_target`]. The
+    /// same value is on [`CudaHost`], which reports it for device 0 alongside
+    /// the host's driver version; this field is per-GPU.
+    pub compute_capability: Option<ComputeCapability>,
 }
 
 impl std::fmt::Display for GpuInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} ({}): {:.1} GiB total",
-            self.name,
-            self.vendor,
-            gib(self.total_bytes)
-        )?;
+        write!(f, "{} ({}", self.name, self.vendor)?;
+        if let Some(gfx) = self.gfx_target {
+            write!(f, ", {gfx}")?;
+        }
+        // `sm_89`, not the bare `8.9` `ComputeCapability` renders, which would
+        // read as a version number in this position.
+        if let Some(cc) = self.compute_capability {
+            write!(f, ", sm_{}{}", cc.major, cc.minor)?;
+        }
+        write!(f, "): {:.1} GiB total", gib(self.total_bytes))?;
         if let Some(free) = self.free_bytes {
             write!(f, ", {:.1} GiB free", gib(free))?;
         }
@@ -119,6 +148,46 @@ impl std::fmt::Display for ComputeCapability {
     /// Renders as `8.6`, matching `nvidia-smi`'s `compute_cap`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}.{}", self.major, self.minor)
+    }
+}
+
+/// AMD GPU architecture target, e.g. `gfx1013` — the identifier a `ROCm`/HIP
+/// code object is built for (`--offload-arch=gfx1013`).
+///
+/// The AMD counterpart of [`ComputeCapability`], and read the same way: to pick
+/// a prebuilt artifact the host can actually run. Ordered `major` first, so a
+/// host can be checked against a minimum:
+///
+/// ```
+/// use gpu_probe::GfxTarget;
+/// assert!(GfxTarget::new(10, 3, 0) >= GfxTarget::new(10, 1, 3));
+/// assert!(GfxTarget::new(11, 0, 0) >= GfxTarget::new(10, 3, 0));
+/// ```
+///
+/// Constructible so callers can express such a requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GfxTarget {
+    /// Major version — the `10` in `gfx1013`.
+    pub major: u32,
+    /// Minor version — the `1` in `gfx1013`.
+    pub minor: u32,
+    /// Stepping — the `3` in `gfx1013`, and the `a` in `gfx90a`.
+    pub step: u32,
+}
+
+impl GfxTarget {
+    /// Create a target from its major, minor, and stepping parts.
+    #[must_use]
+    pub const fn new(major: u32, minor: u32, step: u32) -> Self {
+        Self { major, minor, step }
+    }
+}
+
+impl std::fmt::Display for GfxTarget {
+    /// Renders as `gfx1013`, matching `--offload-arch`. Minor and stepping are
+    /// single hex digits there, so `9.0.10` renders as `gfx90a`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "gfx{}{:x}{:x}", self.major, self.minor, self.step)
     }
 }
 
@@ -169,6 +238,57 @@ pub struct CudaHost {
     pub driver_version: CudaVersion,
 }
 
+/// A `ROCm` release version, e.g. `6.2.4`.
+///
+/// Ordered `major` first, so a host can be checked against a minimum:
+///
+/// ```
+/// use gpu_probe::RocmVersion;
+/// assert!(RocmVersion::new(6, 2, 4) >= RocmVersion::new(6, 0, 0));
+/// ```
+///
+/// Constructible so callers can express such a requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RocmVersion {
+    /// Major version — the `6` in `6.2.4`.
+    pub major: u32,
+    /// Minor version — the `2` in `6.2.4`.
+    pub minor: u32,
+    /// Patch version — the `4` in `6.2.4`.
+    pub patch: u32,
+}
+
+impl RocmVersion {
+    /// Create a version from its major, minor, and patch parts.
+    #[must_use]
+    pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+}
+
+impl std::fmt::Display for RocmVersion {
+    /// Renders as `6.2.4`, matching the `.info/version` file it comes from.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// The host's `ROCm` installation.
+///
+/// The AMD counterpart of [`CudaHost`], but a narrower one: there is no
+/// driver-side version to report, so this describes the userspace install only.
+/// See [`rocm_host`] for what its absence does and does not imply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RocmHost {
+    /// Installed `ROCm` release.
+    pub version: RocmVersion,
+}
+
 /// Detect all GPUs visible on the host.
 ///
 /// Best-effort: spawns only read-only platform queries (NVML, `system_profiler`,
@@ -209,9 +329,47 @@ pub fn cuda_host() -> Option<CudaHost> {
     nvidia::cuda_host()
 }
 
+/// The host's `ROCm` installation, or `None` when `ROCm` is not installed.
+///
+/// Read from `$ROCM_PATH/.info/version`, falling back to `/opt/rocm` — the
+/// plain text file the `rocm-core` package writes. Nothing is linked or
+/// executed, so this costs one file read.
+///
+/// `None` means the `ROCm` **userspace** is absent. It does not mean the GPU is
+/// unusable for compute: the kernel side is a separate component, and what a
+/// build actually has to target is [`GpuInfo::gfx_target`], which comes from
+/// the driver and is reported with no `ROCm` installed at all.
+///
+/// ```no_run
+/// use gpu_probe::RocmVersion;
+///
+/// if let Some(rocm) = gpu_probe::rocm_host()
+///     && rocm.version >= RocmVersion::new(6, 0, 0)
+/// {
+///     // pick a `ROCm` 6 build
+/// }
+/// ```
+#[must_use]
+pub fn rocm_host() -> Option<RocmHost> {
+    rocm::host()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rocm_version_renders_with_patch() {
+        assert_eq!(RocmVersion::new(6, 2, 4).to_string(), "6.2.4");
+        assert_eq!(RocmVersion::new(6, 2, 0).to_string(), "6.2.0");
+    }
+
+    #[test]
+    fn rocm_host_is_stable_across_calls() {
+        // Environment-dependent: most hosts have no ROCm, which is a valid,
+        // passing environment. A filesystem read must not vary between calls.
+        assert_eq!(rocm_host(), rocm_host());
+    }
 
     #[test]
     fn detect_never_panics() {
@@ -231,6 +389,8 @@ mod tests {
             total_bytes: 24 * 1024 * 1024 * 1024,
             free_bytes: Some(12 * 1024 * 1024 * 1024),
             used_bytes: Some(12 * 1024 * 1024 * 1024),
+            gfx_target: None,
+            compute_capability: None,
         };
         let shown = gpu.to_string();
         assert!(shown.contains("NVIDIA"));
@@ -246,10 +406,57 @@ mod tests {
             total_bytes: 8 * 1024 * 1024 * 1024,
             free_bytes: None,
             used_bytes: None,
+            gfx_target: None,
+            compute_capability: None,
         };
         let shown = gpu.to_string();
         assert!(shown.contains("8.0 GiB total"));
         assert!(!shown.contains("free"));
+    }
+
+    #[test]
+    fn display_includes_gfx_target_when_present() {
+        let gpu = GpuInfo {
+            name: "AMD cyan_skillfish".to_string(),
+            vendor: Vendor::Amd,
+            total_bytes: 15 * 1024 * 1024 * 1024,
+            free_bytes: None,
+            used_bytes: None,
+            gfx_target: Some(GfxTarget::new(10, 1, 3)),
+            compute_capability: None,
+        };
+        assert!(gpu.to_string().contains("(AMD, gfx1013)"));
+    }
+
+    #[test]
+    fn display_includes_compute_capability_when_present() {
+        let gpu = GpuInfo {
+            name: "NVIDIA GeForce RTX 4090".to_string(),
+            vendor: Vendor::Nvidia,
+            total_bytes: 24 * 1024 * 1024 * 1024,
+            free_bytes: None,
+            used_bytes: None,
+            gfx_target: None,
+            compute_capability: Some(ComputeCapability::new(8, 9)),
+        };
+        assert!(gpu.to_string().contains("(NVIDIA, sm_89)"));
+    }
+
+    #[test]
+    fn gfx_target_renders_as_offload_arch() {
+        assert_eq!(GfxTarget::new(10, 1, 3).to_string(), "gfx1013");
+        assert_eq!(GfxTarget::new(10, 3, 0).to_string(), "gfx1030");
+        assert_eq!(GfxTarget::new(11, 0, 0).to_string(), "gfx1100");
+        // Stepping 10 is the `a` in `gfx90a`, not a literal "10".
+        assert_eq!(GfxTarget::new(9, 0, 10).to_string(), "gfx90a");
+        assert_eq!(GfxTarget::new(9, 4, 2).to_string(), "gfx942");
+    }
+
+    #[test]
+    fn gfx_targets_order_major_first() {
+        assert!(GfxTarget::new(11, 0, 0) > GfxTarget::new(10, 3, 0));
+        assert!(GfxTarget::new(10, 3, 0) > GfxTarget::new(10, 1, 3));
+        assert!(GfxTarget::new(10, 1, 3) > GfxTarget::new(10, 1, 0));
     }
 
     #[test]
@@ -278,6 +485,8 @@ mod tests {
             total_bytes: 25 * 1024 * 1024 * 1024 + 256 * 1024 * 1024,
             free_bytes: None,
             used_bytes: None,
+            gfx_target: None,
+            compute_capability: None,
         };
         assert!(gpu.to_string().contains("25.2 GiB total"));
     }
@@ -345,6 +554,8 @@ mod tests {
             total_bytes: 16 * 1024 * 1024 * 1024,
             free_bytes: None,
             used_bytes: None,
+            gfx_target: None,
+            compute_capability: None,
         };
         assert_eq!(base.clone(), base);
         let mut other = base.clone();

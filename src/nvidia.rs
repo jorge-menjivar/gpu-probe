@@ -47,6 +47,20 @@ fn nvml() -> Option<&'static Nvml> {
     Some(NVML.get_or_init(|| nvml))
 }
 
+/// Read a device's compute capability, rejecting values NVML shouldn't produce.
+///
+/// NVML reports these as signed and a misbehaving driver can return negatives.
+/// Reject them here rather than casting them into huge unsigned values and
+/// making every caller re-derive the check.
+#[cfg(feature = "nvidia")]
+fn device_compute_capability(device: &nvml_wrapper::Device<'_>) -> Option<ComputeCapability> {
+    let capability = device.cuda_compute_capability().ok()?;
+    Some(ComputeCapability {
+        major: u32::try_from(capability.major).ok()?,
+        minor: u32::try_from(capability.minor).ok()?,
+    })
+}
+
 #[cfg(feature = "nvidia")]
 pub(crate) fn detect() -> Vec<GpuInfo> {
     let Some(nvml) = nvml() else {
@@ -69,6 +83,8 @@ pub(crate) fn detect() -> Vec<GpuInfo> {
             total_bytes: memory.total,
             free_bytes: Some(memory.free),
             used_bytes: Some(memory.used),
+            gfx_target: None,
+            compute_capability: device_compute_capability(&device),
         });
     }
     gpus
@@ -80,20 +96,10 @@ pub(crate) fn detect() -> Vec<GpuInfo> {
 pub(crate) fn cuda_host() -> Option<CudaHost> {
     let nvml = nvml()?;
 
-    // Compute capability is per-device, but consumers use it to choose a build
-    // target for the host, so device 0 is the meaningful answer.
-    let capability = nvml
-        .device_by_index(0)
-        .ok()?
-        .cuda_compute_capability()
-        .ok()?;
-    // NVML reports these as signed and a misbehaving driver can return
-    // negatives. Reject them here rather than casting them into huge unsigned
-    // values and making every caller re-derive the check.
-    let compute_capability = ComputeCapability {
-        major: u32::try_from(capability.major).ok()?,
-        minor: u32::try_from(capability.minor).ok()?,
-    };
+    // Compute capability is per-device — and is also reported that way on
+    // `GpuInfo` — but consumers use this struct to choose one build target for
+    // the host, so device 0 is the meaningful answer here.
+    let compute_capability = device_compute_capability(&nvml.device_by_index(0).ok()?)?;
 
     let packed = nvml.sys_cuda_driver_version().ok()?;
     if packed <= 0 {
