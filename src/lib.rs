@@ -406,10 +406,15 @@ pub fn cuda_host() -> Option<CudaHost> {
 /// plain text file the `rocm-core` package writes. Nothing is linked or
 /// executed, so this costs one file read.
 ///
-/// `None` means the `ROCm` **userspace** is absent. It does not mean the GPU is
-/// unusable for compute: the kernel side is a separate component, and what a
-/// build actually has to target is [`GpuInfo::gfx_target`], which comes from
-/// the driver and is reported with no `ROCm` installed at all.
+/// `Some` is the signal that `ROCm` is installed and the host can run its
+/// builds. `None` is weaker: the install was not found at the prefixes above,
+/// which a distro shipping `ROCm` into `/usr` — or a container carrying only
+/// the runtime libraries — will trigger despite working. Treat `Some` as proof
+/// and `None` as "probably not, worth confirming".
+///
+/// `None` does not mean the GPU is unusable for compute: the kernel side is a
+/// separate component, and what a build has to target is
+/// [`GpuInfo::gfx_target`], reported with no `ROCm` installed at all.
 ///
 /// ```no_run
 /// use gpu_probe::RocmVersion;
@@ -433,7 +438,9 @@ pub fn rocm_host() -> Option<RocmHost> {
 /// Narrower than it looks: this reports the **toolkit**, not the GPU runtime.
 /// A host running compute through a distro-packaged Level Zero driver with no
 /// toolkit installed reports `None`, because reading that runtime's version
-/// requires linking it rather than reading a file.
+/// requires linking it rather than reading a file. So `Some` proves the
+/// toolkit is present, while `None` is the weakest negative of the three
+/// probes — it does not rule out a usable Level Zero runtime.
 ///
 /// ```no_run
 /// use gpu_probe::OneApiVersion;

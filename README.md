@@ -142,14 +142,53 @@ if let Some(oneapi) = gpu_probe::oneapi_host() {
 }
 ```
 
-`None` means that stack is absent — for `cuda_host()`, NVML is unavailable (no
-driver, no device, the `nvidia` feature disabled, or unusable values); for the
-other two, the userspace install is missing. **Absence says nothing about
-whether the GPU works for compute**: `gfx_target` comes from the kernel driver
+`Some` is the signal that the stack is installed and the host can run its
+builds. `None` is weaker: it means the stack was not found where this crate
+looks — NVML unavailable for `cuda_host()` (no driver, no device, the `nvidia`
+feature disabled, or unusable values), or no userspace install at the standard
+prefixes for the other two. A distro shipping ROCm into `/usr` rather than
+`/opt/rocm`, or a container carrying only the runtime libraries, will report
+`None` despite working. Treat `Some` as proof and `None` as "probably not,
+worth confirming".
+
+What `None` does **not** tell you is that the GPU is unusable. The kernel and
+userspace halves are independent: `gfx_target` comes from the `amdgpu` driver
 and is reported with no ROCm installed at all.
 
 `cuda_host().compute_capability` is device 0's — the same value that GPU reports
 in its own `compute_capability` field.
+
+### Is a device ready for a model?
+
+Readiness is four separate questions, and the pieces above answer each one:
+
+```rust
+use gpu_probe::GfxTarget;
+
+let need = 16 * 1024 * 1024 * 1024; // 16 GiB
+let built_for = GfxTarget::new(10, 1, 3); // this artifact is gfx1013
+
+// The runtime has to be installed to execute anything.
+let runtime_ready = gpu_probe::rocm_host().is_some();
+
+let device_ready = gpu_probe::detect().iter().any(|gpu| {
+    // The kernel driver has to expose the GPU for compute — on AMD, a
+    // `gfx_target` at all means KFD is live.
+    gpu.gfx_target == Some(built_for)
+        // And the weights have to fit.
+        && gpu.free_bytes.unwrap_or(gpu.total_bytes) >= need
+});
+
+if runtime_ready && device_ready {
+    // load the model
+}
+```
+
+For NVIDIA the runtime check is `cuda_host().is_some()`, which tests the
+*driver* — the usual thing to verify, since frameworks like PyTorch ship their
+own CUDA runtime. For Intel, `oneapi_host()` tests for the toolkit and does not
+see a distro-packaged Level Zero runtime, so it is the least complete of the
+three.
 
 ## Notes
 
