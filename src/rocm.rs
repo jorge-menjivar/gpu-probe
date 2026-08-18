@@ -28,18 +28,9 @@ const DEFAULT_ROOT: &str = "/opt/rocm";
 const VERSION_FILE: &str = ".info/version";
 
 /// Parse a `.info/version` file: `major.minor.patch`, followed by a build
-/// suffix this ignores (`6.2.4-123` → `6.2.4`).
+/// suffix the shared parser ignores (`6.2.4-123` → `6.2.4`).
 fn parse_version(content: &str) -> Option<RocmVersion> {
-    // The suffix is a package build number, not part of the release.
-    let version = content.trim().split(['-', '+']).next()?;
-    let mut parts = version.split('.');
-    let major = parts.next()?.trim().parse().ok()?;
-    let minor = parts.next()?.trim().parse().ok()?;
-    // Some builds ship `6.2` with no patch component.
-    let patch = match parts.next() {
-        Some(patch) => patch.trim().parse().ok()?,
-        None => 0,
-    };
+    let (major, minor, patch) = crate::parse_dotted_version(content)?;
     Some(RocmVersion {
         major,
         minor,

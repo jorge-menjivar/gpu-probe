@@ -107,6 +107,23 @@ fn rocm_host_is_publicly_usable() {
 }
 
 #[test]
+fn oneapi_host_is_publicly_usable() {
+    // `OneApiVersion` is part of the public API and `Copy`/`Ord`/`Display`.
+    let version = gpu_probe::OneApiVersion::new(2024, 2, 1);
+    assert_eq!(version.to_string(), "2024.2.1");
+    assert!(version >= gpu_probe::OneApiVersion::new(2024, 0, 0));
+
+    // Environment-dependent: most hosts have no oneAPI, which is a valid,
+    // passing environment.
+    if let Some(oneapi) = gpu_probe::oneapi_host() {
+        assert!(
+            oneapi.version.major > 0,
+            "a real install has a release year"
+        );
+    }
+}
+
+#[test]
 fn vendor_is_publicly_usable() {
     // `Vendor` is part of the public API and `Copy`/`Display`.
     let v = gpu_probe::Vendor::Apple;

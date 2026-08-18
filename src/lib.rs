@@ -16,7 +16,8 @@
 //!   unified memory).
 //!
 //! Host toolchain properties are reported separately from any one GPU:
-//! [`cuda_host`] for the CUDA driver, [`rocm_host`] for the `ROCm` install.
+//! [`cuda_host`] for the CUDA driver, [`rocm_host`] for the `ROCm` install, and
+//! [`oneapi_host`] for the Intel `oneAPI` install.
 //!
 //! Detection is best-effort: [`detect`] returns an empty `Vec` when no GPU is
 //! found or the platform is unsupported — never an error.
@@ -31,6 +32,7 @@ mod drm;
 mod kfd;
 mod metal;
 mod nvidia;
+mod oneapi;
 mod rocm;
 
 /// GPU hardware vendor.
@@ -289,6 +291,75 @@ pub struct RocmHost {
     pub version: RocmVersion,
 }
 
+/// Parse a dotted version — `6.2.4`, `2024.2` — into major, minor, and patch.
+///
+/// A trailing build suffix (`6.2.4-123`) is dropped: it identifies a package
+/// build, not the release. Patch defaults to `0`, since some releases ship only
+/// `major.minor`. Shared by the `ROCm` and `oneAPI` probes, which read the same
+/// shape of version out of different places.
+fn parse_dotted_version(text: &str) -> Option<(u32, u32, u32)> {
+    let version = text.trim().split(['-', '+']).next()?;
+    let mut parts = version.split('.');
+    let major = parts.next()?.trim().parse().ok()?;
+    let minor = parts.next()?.trim().parse().ok()?;
+    let patch = match parts.next() {
+        Some(patch) => patch.trim().parse().ok()?,
+        None => 0,
+    };
+    Some((major, minor, patch))
+}
+
+/// An Intel `oneAPI` toolkit version, e.g. `2024.2.1`.
+///
+/// Ordered `major` first — which for `oneAPI` is the release year — so a host
+/// can be checked against a minimum:
+///
+/// ```
+/// use gpu_probe::OneApiVersion;
+/// assert!(OneApiVersion::new(2025, 0, 0) >= OneApiVersion::new(2024, 2, 0));
+/// ```
+///
+/// Constructible so callers can express such a requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OneApiVersion {
+    /// Major version — the release year, the `2024` in `2024.2.1`.
+    pub major: u32,
+    /// Minor version — the `2` in `2024.2.1`.
+    pub minor: u32,
+    /// Patch version — the `1` in `2024.2.1`.
+    pub patch: u32,
+}
+
+impl OneApiVersion {
+    /// Create a version from its major, minor, and patch parts.
+    #[must_use]
+    pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+}
+
+impl std::fmt::Display for OneApiVersion {
+    /// Renders as `2024.2.1`, matching the install directory it comes from.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// The host's Intel `oneAPI` installation.
+///
+/// The Intel counterpart of [`RocmHost`], and equally narrow: a userspace
+/// install, with no driver version behind it. See [`oneapi_host`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct OneApiHost {
+    /// Installed `oneAPI` toolkit release.
+    pub version: OneApiVersion,
+}
+
 /// Detect all GPUs visible on the host.
 ///
 /// Best-effort: spawns only read-only platform queries (NVML, `system_profiler`,
@@ -354,9 +425,56 @@ pub fn rocm_host() -> Option<RocmHost> {
     rocm::host()
 }
 
+/// The host's Intel `oneAPI` installation, or `None` when it is not installed.
+///
+/// Read from the component layout under `$ONEAPI_ROOT`, falling back to
+/// `/opt/intel/oneapi`. Nothing is linked or executed.
+///
+/// Narrower than it looks: this reports the **toolkit**, not the GPU runtime.
+/// A host running compute through a distro-packaged Level Zero driver with no
+/// toolkit installed reports `None`, because reading that runtime's version
+/// requires linking it rather than reading a file.
+///
+/// ```no_run
+/// use gpu_probe::OneApiVersion;
+///
+/// if let Some(oneapi) = gpu_probe::oneapi_host()
+///     && oneapi.version >= OneApiVersion::new(2024, 0, 0)
+/// {
+///     // pick a oneAPI 2024-or-newer build
+/// }
+/// ```
+#[must_use]
+pub fn oneapi_host() -> Option<OneApiHost> {
+    oneapi::host()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_dotted_versions_in_both_shapes() {
+        assert_eq!(parse_dotted_version("6.2.4-123"), Some((6, 2, 4)));
+        assert_eq!(parse_dotted_version("2024.2"), Some((2024, 2, 0)));
+        assert_eq!(parse_dotted_version("  5.7.1  "), Some((5, 7, 1)));
+        assert_eq!(parse_dotted_version("6"), None, "a bare major is not one");
+        assert_eq!(parse_dotted_version("latest"), None);
+        assert_eq!(parse_dotted_version(""), None);
+    }
+
+    #[test]
+    fn oneapi_version_renders_with_patch() {
+        assert_eq!(OneApiVersion::new(2024, 2, 1).to_string(), "2024.2.1");
+        assert_eq!(OneApiVersion::new(2025, 0, 0).to_string(), "2025.0.0");
+    }
+
+    #[test]
+    fn oneapi_host_is_stable_across_calls() {
+        // Environment-dependent: most hosts have no oneAPI, which is a valid,
+        // passing environment. A filesystem read must not vary between calls.
+        assert_eq!(oneapi_host(), oneapi_host());
+    }
 
     #[test]
     fn rocm_version_renders_with_patch() {

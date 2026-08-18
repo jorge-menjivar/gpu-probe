@@ -79,10 +79,14 @@ fn main() {
     // the GPU above it rather than the host.
     //
     // They are not the same measurement. `cuda` is the driver version from
-    // NVML; `rocm` is the userspace install, because AMD exposes no driver
-    // version anywhere. The architecture each build targets is the per-GPU
-    // `arch` row, which needs neither of these installed.
+    // NVML; `rocm` and `oneapi` are userspace installs, because neither AMD nor
+    // Intel exposes a driver version anywhere. The architecture each build
+    // targets is the per-GPU `arch` row, which needs none of them installed.
     println!("host");
+    match gpu_probe::oneapi_host() {
+        Some(oneapi) => println!("     oneapi {:>10}", oneapi.version.to_string()),
+        None => println!("     oneapi    unavailable"),
+    }
     match gpu_probe::rocm_host() {
         Some(rocm) => println!("     rocm   {:>10}", rocm.version.to_string()),
         None => println!("     rocm      unavailable"),
