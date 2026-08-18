@@ -147,10 +147,14 @@ returned separately. They are not the same measurement:
 | `cuda_host()` | CUDA **driver** version | NVML, kernel-side |
 | `rocm_host()` | ROCm **userspace** release | `$ROCM_PATH/.info/version` → `/opt/rocm` |
 | `oneapi_host()` | oneAPI **toolkit** release | `$ONEAPI_ROOT/compiler/latest` → `/opt/intel/oneapi` |
+| `vulkan_host()` | Vulkan **API** version | loader (`libvulkan.so.1`) + ICD manifests under `/usr/share/vulkan/icd.d` |
 
 Only NVIDIA exposes a driver version. `amdgpu` declares no `MODULE_VERSION` and
 KFD publishes only a topology counter, so the AMD and Intel probes can report the
 userspace install and nothing more — a property of the drivers, not an omission.
+Vulkan is a runtime rather than a toolkit, and — unlike the other three — has no
+per-GPU architecture to match: SPIR-V is portable and the driver compiles it at
+load time, so `vulkan_host()` carries no `arch_target` counterpart.
 
 ```rust
 use gpu_probe::{ComputeCapability, RocmVersion};
@@ -174,6 +178,10 @@ if let Some(rocm) = gpu_probe::rocm_host() {
 
 if let Some(oneapi) = gpu_probe::oneapi_host() {
     println!("oneAPI {}", oneapi.version);  // oneAPI 2024.2.1
+}
+
+if let Some(vulkan) = gpu_probe::vulkan_host() {
+    println!("Vulkan {}", vulkan.api_version);  // Vulkan 1.3.280
 }
 ```
 

@@ -16,8 +16,9 @@
 //!   unified memory).
 //!
 //! Host toolchain properties are reported separately from any one GPU:
-//! [`cuda_host`] for the CUDA driver, [`rocm_host`] for the `ROCm` install, and
-//! [`oneapi_host`] for the Intel `oneAPI` install.
+//! [`cuda_host`] for the CUDA driver, [`rocm_host`] for the `ROCm` install,
+//! [`oneapi_host`] for the Intel `oneAPI` install, and [`vulkan_host`] for the
+//! Vulkan runtime.
 //!
 //! Detection is best-effort: [`detect`] returns an empty `Vec` when no GPU is
 //! found or the platform is unsupported — never an error.
@@ -35,6 +36,7 @@ mod metal;
 mod nvidia;
 mod oneapi;
 mod rocm;
+mod vulkan;
 
 /// GPU hardware vendor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -513,6 +515,59 @@ pub struct OneApiHost {
     pub version: OneApiVersion,
 }
 
+/// A Vulkan API version, e.g. `1.3.280`.
+///
+/// Ordered `major` first, so a host can be checked against a minimum:
+///
+/// ```
+/// use gpu_probe::VulkanVersion;
+/// assert!(VulkanVersion::new(1, 3, 280) >= VulkanVersion::new(1, 2, 0));
+/// ```
+///
+/// Constructible so callers can express such a requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VulkanVersion {
+    /// Major version — the `1` in `1.3.280`.
+    pub major: u32,
+    /// Minor version — the `3` in `1.3.280`.
+    pub minor: u32,
+    /// Patch version — the `280` in `1.3.280`.
+    pub patch: u32,
+}
+
+impl VulkanVersion {
+    /// Create a version from its major, minor, and patch parts.
+    #[must_use]
+    pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+}
+
+impl std::fmt::Display for VulkanVersion {
+    /// Renders as `1.3.280`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// The host's Vulkan runtime.
+///
+/// Reported from the loader and the installed ICD manifests, so — unlike
+/// [`RocmHost`] and [`OneApiHost`] — this describes a runtime that is actually
+/// present rather than a toolkit that may be. There is no architecture field:
+/// SPIR-V is portable and driver-compiled, so a Vulkan build has no per-GPU
+/// target to match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct VulkanHost {
+    /// Highest API version any installed driver advertises.
+    pub api_version: VulkanVersion,
+}
+
 /// Detect all GPUs visible on the host.
 ///
 /// Best-effort: spawns only read-only platform queries (NVML, `system_profiler`,
@@ -607,6 +662,26 @@ pub fn rocm_host() -> Option<RocmHost> {
 #[must_use]
 pub fn oneapi_host() -> Option<OneApiHost> {
     oneapi::host()
+}
+
+/// The host's Vulkan runtime, or `None` when no loader is installed.
+///
+/// Read from `libvulkan.so.1` plus the ICD manifests under
+/// `/usr/share/vulkan/icd.d`. Nothing is linked or executed, so this costs a
+/// handful of file reads.
+///
+/// ```no_run
+/// use gpu_probe::VulkanVersion;
+///
+/// if let Some(vulkan) = gpu_probe::vulkan_host()
+///     && vulkan.api_version >= VulkanVersion::new(1, 2, 0)
+/// {
+///     // pick a Vulkan 1.2-or-newer build
+/// }
+/// ```
+#[must_use]
+pub fn vulkan_host() -> Option<VulkanHost> {
+    vulkan::host()
 }
 
 #[cfg(test)]
