@@ -154,7 +154,42 @@ fn vulkan_host_is_publicly_usable() {
             vulkan.api_version.major > 0,
             "a real loader reports a nonzero API version"
         );
+        assert!(
+            vulkan.api_version >= gpu_probe::VulkanVersion::new(1, 0, 0),
+            "every ICD advertises at least Vulkan 1.0",
+        );
+        // The version is what a caller gates a build on, so it must render.
+        assert!(!vulkan.api_version.to_string().is_empty());
+        assert_eq!(
+            gpu_probe::vulkan_host(),
+            Some(vulkan),
+            "a filesystem probe must not vary between calls",
+        );
     }
+}
+
+#[test]
+fn vulkan_support_is_independent_of_the_detected_gpus() {
+    // The two answer different questions, and the crate must not couple them:
+    // a software rasterizer reports an API version with no GPU detected, and a
+    // GPU with no loader installed reports none. Both are valid environments,
+    // so this asserts only that neither call constrains the other.
+    // Every combination is a real machine: a software rasterizer reports an API
+    // version with no GPU detected, and a GPU with no loader installed reports
+    // none. So this asserts neither call disturbs the other, not an outcome.
+    let before = gpu_probe::vulkan_host();
+    let gpus = gpu_probe::detect();
+    let after = gpu_probe::vulkan_host();
+
+    assert_eq!(
+        before, after,
+        "GPU detection must not change the Vulkan answer",
+    );
+    assert_eq!(
+        gpu_probe::detect().len(),
+        gpus.len(),
+        "probing Vulkan must not disturb GPU detection",
+    );
 }
 
 #[test]
