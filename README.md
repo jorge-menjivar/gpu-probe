@@ -147,7 +147,7 @@ returned separately. They are not the same measurement:
 | `cuda_host()` | CUDA **driver** version | NVML, kernel-side |
 | `rocm_host()` | ROCm **userspace** release | `$ROCM_PATH/.info/version` → `/opt/rocm` |
 | `oneapi_host()` | oneAPI **toolkit** release | `$ONEAPI_ROOT/compiler/latest` → `/opt/intel/oneapi` |
-| `vulkan_host()` | Vulkan **API** version | loader (`libvulkan.so.1`) + ICD manifests under `/usr/share/vulkan/icd.d` |
+| `vulkan_host()` | Vulkan **API** version | loader (`libvulkan.so.1`) + ICD manifests under `/usr/local/share/vulkan/icd.d`, `/usr/share/vulkan/icd.d` |
 
 Only NVIDIA exposes a driver version. `amdgpu` declares no `MODULE_VERSION` and
 KFD publishes only a topology counter, so the AMD and Intel probes can report the
@@ -189,7 +189,7 @@ if let Some(vulkan) = gpu_probe::vulkan_host() {
 builds. `None` is weaker: it means the stack was not found where this crate
 looks — NVML unavailable for `cuda_host()` (no driver, no device, the `nvidia`
 feature disabled, or unusable values), or no userspace install at the standard
-prefixes for the other two. A distro shipping ROCm into `/usr` rather than
+prefixes for the others. A distro shipping ROCm into `/usr` rather than
 `/opt/rocm`, or a container carrying only the runtime libraries, will report
 `None` despite working. Treat `Some` as proof and `None` as "probably not,
 worth confirming".
@@ -197,6 +197,16 @@ worth confirming".
 What `None` does **not** tell you is that the GPU is unusable. The kernel and
 userspace halves are independent: `arch_target` comes from the `amdgpu` driver
 and is reported with no ROCm installed at all.
+
+`vulkan_host()` inverts that asymmetry, and the difference matters when you are
+choosing a build. Its `Some` is the weak answer: the loader and an ICD manifest
+are enough to satisfy it, and a software rasterizer — Mesa's lavapipe, installed
+by default on many distributions — is an ICD like any other. So a machine with
+no GPU at all can report a Vulkan API version, and a consumer reading that as
+"this host can compute on a GPU" will pick a Vulkan artifact and run it on the
+CPU through LLVM, slower than the CPU build it passed over. Pair it with
+`detect()` when the question is capability rather than "is a runtime present":
+an empty GPU list alongside `Some` is precisely the software-rasterizer case.
 
 `cuda_host().compute_capability` is device 0's — the same value that GPU reports
 as `ArchTarget::Sm` in its own `arch_target`.
