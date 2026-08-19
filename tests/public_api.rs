@@ -141,6 +141,23 @@ fn oneapi_host_is_publicly_usable() {
 }
 
 #[test]
+fn vulkan_host_is_publicly_usable() {
+    // `VulkanVersion` is part of the public API and `Copy`/`Ord`/`Display`.
+    let version = gpu_probe::VulkanVersion::new(1, 3, 280);
+    assert_eq!(version.to_string(), "1.3.280");
+    assert!(version >= gpu_probe::VulkanVersion::new(1, 2, 0));
+
+    // Environment-dependent: a headless CI box may have no Vulkan loader
+    // installed at all, which is a valid, passing environment.
+    if let Some(vulkan) = gpu_probe::vulkan_host() {
+        assert!(
+            vulkan.api_version.major > 0,
+            "a real loader reports a nonzero API version"
+        );
+    }
+}
+
+#[test]
 fn vendor_is_publicly_usable() {
     // `Vendor` is part of the public API and `Copy`/`Display`.
     let v = gpu_probe::Vendor::Apple;
