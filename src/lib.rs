@@ -725,6 +725,41 @@ mod tests {
     }
 
     #[test]
+    fn vulkan_version_renders_with_patch() {
+        assert_eq!(VulkanVersion::new(1, 3, 280).to_string(), "1.3.280");
+        assert_eq!(VulkanVersion::new(1, 0, 0).to_string(), "1.0.0");
+        // A three-digit patch is the norm for Vulkan headers, and must not be
+        // packed or truncated the way `1.3` alone would be.
+        assert_eq!(VulkanVersion::new(1, 10, 5).to_string(), "1.10.5");
+    }
+
+    #[test]
+    fn vulkan_host_is_stable_across_calls() {
+        // Environment-dependent: a host with no loader is a valid, passing
+        // environment. A filesystem read must not vary between calls.
+        assert_eq!(vulkan_host(), vulkan_host());
+    }
+
+    #[test]
+    fn vulkan_host_carries_only_an_api_version() {
+        // No `arch_target` counterpart, deliberately: SPIR-V is portable and
+        // driver-compiled, so there is no per-GPU target to match. This pins
+        // that shape, and the `Copy`/`Eq` derives callers rely on.
+        let host = VulkanHost {
+            api_version: VulkanVersion::new(1, 3, 280),
+        };
+        let copied = host;
+        assert_eq!(copied, host);
+        assert_eq!(copied.api_version, VulkanVersion::new(1, 3, 280));
+        assert_ne!(
+            host,
+            VulkanHost {
+                api_version: VulkanVersion::new(1, 2, 0)
+            }
+        );
+    }
+
+    #[test]
     fn detect_never_panics() {
         // Environment-dependent (may be empty on headless CI); exercise the
         // full path plus the Display impl without asserting a GPU exists.

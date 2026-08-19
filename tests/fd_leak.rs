@@ -54,4 +54,10 @@ fn probing_does_not_leak_file_descriptors() {
     assert_flat("cuda_host()", || {
         let _ = gpu_probe::cuda_host();
     });
+    // `vulkan_host()` opens a directory and a file per manifest on every call,
+    // which is the same shape of mistake in a different probe: a caller
+    // polling it on a timer must not accumulate descriptors either.
+    assert_flat("vulkan_host()", || {
+        let _ = gpu_probe::vulkan_host();
+    });
 }
