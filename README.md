@@ -18,7 +18,7 @@ Cross-platform GPU memory (VRAM) detection for Rust — no vendor SDKs, nothing 
 
 Best-effort: you get an empty list on unsupported platforms, never an error.
 
-**Note:** Verified on NVIDIA hardware and on an AMD BC-250 APU. The Intel and Apple paths are implemented but not yet confirmed on real devices, as are the ROCm and oneAPI install probes — if something doesn't work, please [open an issue](https://github.com/jorge-menjivar/gpu-probe/issues). Help from the community confirming detection on Intel and Apple GPUs is very much appreciated.
+**Note:** Verified on NVIDIA, AMD and Apple Silicon hardware. The Intel path is implemented but not yet confirmed on a real device, as are the ROCm and oneAPI install probes — if something doesn't work, please [open an issue](https://github.com/jorge-menjivar/gpu-probe/issues). Help from the community confirming detection on Intel GPUs is very much appreciated.
 
 ## Install
 
@@ -133,8 +133,9 @@ The AMD form comes from KFD sysfs, published by the `amdgpu` kernel driver —
 
 The Intel and Apple forms are derived rather than queried, because neither
 platform publishes an architecture a caller can read: Intel's comes from a PCI
-device id table, Apple's from the chip name. Both report `None` for anything
-their table does not recognise rather than guessing, and **neither has been
+device id table, Apple's from the chip name — the latter following Apple's
+published Metal Feature Set Tables. Both report `None` for anything their table
+does not recognise rather than guessing, and **the Intel table has not been
 verified against real hardware yet**.
 
 ### Host toolchains
@@ -247,7 +248,7 @@ three.
 
 - `total_bytes` is dedicated VRAM on discrete GPUs. On integrated/unified GPUs (Intel iGPUs, AMD APUs, Apple Silicon) it's the shared system-memory ceiling, and `free_bytes` / `used_bytes` are often `None`.
 - Apple Silicon is an exception: because CPU and GPU share one pool, `free_bytes` / `used_bytes` come from system-wide paging statistics (`vm_stat`), counting active + wired + compressor pages. That is the same figure Activity Monitor reports as "Memory Used", so it reflects the whole machine rather than the GPU alone. Discrete GPUs on Intel Macs report their own VRAM and are left untouched.
-- AMD APUs are a special case: their `mem_info_vram_total` is only a BIOS carveout (512 MiB on a BC-250), so `total_bytes` adds the GTT pool they really allocate from — sized by the kernel's `ttm.pages_limit` — and `free_bytes` / `used_bytes` cover both pools. The result matches Vulkan/RADV to the byte; ROCm reports ~512 MiB less, since KFD publishes only the GTT-backed bank.
+- AMD APUs are a special case: their `mem_info_vram_total` is only a BIOS carveout (as little as 512 MiB), so `total_bytes` adds the GTT pool they really allocate from — sized by the kernel's `ttm.pages_limit` — and `free_bytes` / `used_bytes` cover both pools. The result matches Vulkan/RADV to the byte; ROCm reports ~512 MiB less, since KFD publishes only the GTT-backed bank.
 - AMD GPU names come from the KFD ASIC codename (`AMD cyan_skillfish`), falling back to the DRM node (`AMD GPU (card1)`) when KFD reports none.
 - `oneapi_host()` covers the **toolkit**, not the GPU runtime: a host using a distro-packaged Level Zero driver with no toolkit reports `None`, since reading that runtime's version needs linking rather than a file read. Not yet verified against a real install.
 - NVIDIA detection reads NVML from the installed driver at runtime — the CUDA toolkit is not required.
