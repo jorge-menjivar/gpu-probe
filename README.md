@@ -148,7 +148,7 @@ returned separately. They are not the same measurement:
 | `cuda_host()` | CUDA **driver** version | NVML, kernel-side |
 | `rocm_host()` | ROCm **userspace** release | `$ROCM_PATH/.info/version` → `/opt/rocm` |
 | `oneapi_host()` | oneAPI **toolkit** release | `$ONEAPI_ROOT/compiler/latest` → `/opt/intel/oneapi` |
-| `vulkan_host()` | Vulkan **API** version | loader (`libvulkan.so.1`) + ICD manifests under `/usr/local/share/vulkan/icd.d`, `/usr/share/vulkan/icd.d` |
+| `vulkan_host()` | Vulkan **driver-advertised API** version | loader (`libvulkan.so.1`) + ICD manifests under `/usr/local/share/vulkan/icd.d`, `/usr/share/vulkan/icd.d` |
 
 Only NVIDIA exposes a driver version. `amdgpu` declares no `MODULE_VERSION` and
 KFD publishes only a topology counter, so the AMD and Intel probes can report the
@@ -208,6 +208,28 @@ no GPU at all can report a Vulkan API version, and a consumer reading that as
 CPU through LLVM, slower than the CPU build it passed over. Pair it with
 `detect()` when the question is capability rather than "is a runtime present":
 an empty GPU list alongside `Some` is precisely the software-rasterizer case.
+
+Its version needs the same care. `api_version` is the highest any installed
+driver advertises in its ICD manifest — a static declaration on disk, read
+without linking anything — and that is neither of the two numbers it resembles:
+
+- **Not the loader's instance version.** `vulkaninfo` and
+  `vkEnumerateInstanceVersion` report the loader's, so the two routinely
+  disagree: a Mesa driver advertising `1.4.354` behind a `1.4.357` loader is
+  reported here as `1.4.354`. The driver's is the one that binds, since loaders
+  track the current headers while drivers implement features on their own
+  schedule. The loader only becomes the constraint when the two are sourced
+  separately — a container whose base image carries a stale loader against
+  drivers bind-mounted from the host.
+- **Not any single GPU's.** With two drivers installed, `vulkan_host()` is the
+  higher of what they advertise and may describe neither card. Per-device
+  versions come from `vkGetPhysicalDeviceProperties`, which requires linking
+  the loader and creating an instance — the vendor-SDK-free trade this crate
+  exists to make.
+
+Gate on `major`/`minor` in either case. Vulkan's patch number is the spec
+header revision, not a feature level, so `1.4.354` and `1.4.357` are equally
+Vulkan 1.4 and a patch-sensitive check only rejects builds that would have run.
 
 `cuda_host().compute_capability` is device 0's — the same value that GPU reports
 as `ArchTarget::Sm` in its own `arch_target`.

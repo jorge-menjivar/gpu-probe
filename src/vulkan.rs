@@ -7,6 +7,14 @@
 //! "can this host run a Vulkan build, and to which API version", which is all
 //! a consumer selecting a prebuilt artifact needs.
 //!
+//! What a manifest yields is that driver's *advertised* version, and `host()`
+//! reports the highest across them. That is neither the loader's instance
+//! version — the number `vulkaninfo` prints, usually the higher of the two —
+//! nor any single device's `apiVersion`; both of those require creating an
+//! instance and calling into the loader. Staying on the filesystem is the
+//! trade this module makes, and the reason a caller must not read the result
+//! as a per-GPU capability.
+//!
 //! Unlike CUDA and `ROCm` there is no architecture to report: SPIR-V is
 //! portable and the driver compiles it at load time, so a Vulkan build that
 //! runs anywhere runs everywhere the loader does.

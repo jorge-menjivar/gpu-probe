@@ -526,13 +526,19 @@ pub struct OneApiHost {
 /// ```
 ///
 /// Constructible so callers can express such a requirement.
+///
+/// Gate on `major`/`minor`. Vulkan's patch number is the spec header revision
+/// and carries no feature guarantee — a 1.4.354 driver and a 1.4.357 loader
+/// are both Vulkan 1.4 — so a patch-sensitive comparison rejects builds that
+/// would have run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VulkanVersion {
     /// Major version — the `1` in `1.3.280`.
     pub major: u32,
     /// Minor version — the `3` in `1.3.280`.
     pub minor: u32,
-    /// Patch version — the `280` in `1.3.280`.
+    /// Patch version — the `280` in `1.3.280`. The spec header revision, not
+    /// a feature level.
     pub patch: u32,
 }
 
@@ -562,10 +568,30 @@ impl std::fmt::Display for VulkanVersion {
 /// present rather than a toolkit that may be. There is no architecture field:
 /// SPIR-V is portable and driver-compiled, so a Vulkan build has no per-GPU
 /// target to match.
+///
+/// Host-level, not per-device: see [`api_version`](Self::api_version) for what
+/// the number does and does not promise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct VulkanHost {
-    /// Highest API version any installed driver advertises.
+    /// Highest API version any installed driver advertises in its ICD
+    /// manifest.
+    ///
+    /// A driver's own static declaration on disk, which makes it two things it
+    /// is easy to mistake it for:
+    ///
+    /// - **Not per-device.** With two drivers installed — an AMD iGPU beside
+    ///   an NVIDIA dGPU, say — this is the higher of the two and may describe
+    ///   neither card. A specific device's version comes from
+    ///   `vkGetPhysicalDeviceProperties`, which means linking the loader and
+    ///   creating an instance; this crate deliberately does neither.
+    /// - **Not the loader's instance version.** That is what `vulkaninfo` and
+    ///   `vkEnumerateInstanceVersion` report, and it is usually the newer of
+    ///   the two, so the numbers routinely disagree. The driver's is the one
+    ///   that binds in practice: loaders track the current headers while
+    ///   drivers implement features on their own schedule.
+    ///
+    /// Compare on `major`/`minor` only — see [`VulkanVersion`].
     pub api_version: VulkanVersion,
 }
 
@@ -670,6 +696,10 @@ pub fn oneapi_host() -> Option<OneApiHost> {
 /// Read from `libvulkan.so.1` plus the ICD manifests under
 /// `/usr/share/vulkan/icd.d`. Nothing is linked or executed, so this costs a
 /// handful of file reads.
+///
+/// The version is the highest any installed *driver* advertises — neither the
+/// loader's instance version nor any one GPU's, both of which would require
+/// calling into the loader. See [`VulkanHost::api_version`].
 ///
 /// ```no_run
 /// use gpu_probe::VulkanVersion;
