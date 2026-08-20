@@ -12,8 +12,9 @@
 //!   ceiling, and AMD APUs their VRAM carveout plus GTT pool (see
 //!   [`GpuInfo::total_bytes`]). AMD cards additionally report their `gfx`
 //!   target from KFD sysfs — no `ROCm` install needed.
-//! - **Apple/macOS**: `system_profiler` + `sysctl` (Apple Silicon reports
-//!   unified memory).
+//! - **Apple/macOS**: `system_profiler` + `sysctl` for the chip and its memory
+//!   ceiling, plus `vm_stat` for the used/free split (Apple Silicon reports
+//!   unified memory, so that split is system-wide).
 //!
 //! Host toolchain properties are reported separately from any one GPU:
 //! [`cuda_host`] for the CUDA driver, [`rocm_host`] for the `ROCm` install,
@@ -571,8 +572,8 @@ pub struct VulkanHost {
 /// Detect all GPUs visible on the host.
 ///
 /// Best-effort: spawns only read-only platform queries (NVML, `system_profiler`,
-/// `sysctl`) and reads sysfs. Returns an empty `Vec` on unsupported platforms
-/// or when no GPU is found.
+/// `sysctl`, `vm_stat`) and reads sysfs. Returns an empty `Vec` on unsupported
+/// platforms or when no GPU is found.
 #[must_use]
 pub fn detect() -> Vec<GpuInfo> {
     let mut gpus = Vec::new();

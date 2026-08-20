@@ -12,7 +12,7 @@ Cross-platform GPU memory (VRAM) detection for Rust — no vendor SDKs, nothing 
 | NVIDIA | ✅ | ✅ | ✅<sup>†</sup> | NVML · `system_profiler` |
 | AMD    | ✅ | — | ✅<sup>†</sup> | DRM sysfs · KFD · `system_profiler` |
 | Intel  | ✅ | — | ✅<sup>†</sup> | DRM sysfs · `system_profiler` |
-| Apple  | — | — | ✅ | `system_profiler` + `sysctl` |
+| Apple  | — | — | ✅ | `system_profiler` · `sysctl` · `vm_stat` |
 
 <sup>†</sup> Intel Macs only — discrete and integrated GPUs are read from `system_profiler`.
 
@@ -245,7 +245,8 @@ three.
 
 ## Notes
 
-- `total_bytes` is dedicated VRAM on discrete GPUs. On integrated/unified GPUs (Intel iGPUs, AMD APUs, Apple Silicon) it's the shared system-memory ceiling, and `free_bytes` / `used_bytes` are usually `None`.
+- `total_bytes` is dedicated VRAM on discrete GPUs. On integrated/unified GPUs (Intel iGPUs, AMD APUs, Apple Silicon) it's the shared system-memory ceiling, and `free_bytes` / `used_bytes` are often `None`.
+- Apple Silicon is an exception: because CPU and GPU share one pool, `free_bytes` / `used_bytes` come from system-wide paging statistics (`vm_stat`), counting active + wired + compressor pages. That is the same figure Activity Monitor reports as "Memory Used", so it reflects the whole machine rather than the GPU alone. Discrete GPUs on Intel Macs report their own VRAM and are left untouched.
 - AMD APUs are a special case: their `mem_info_vram_total` is only a BIOS carveout (512 MiB on a BC-250), so `total_bytes` adds the GTT pool they really allocate from — sized by the kernel's `ttm.pages_limit` — and `free_bytes` / `used_bytes` cover both pools. The result matches Vulkan/RADV to the byte; ROCm reports ~512 MiB less, since KFD publishes only the GTT-backed bank.
 - AMD GPU names come from the KFD ASIC codename (`AMD cyan_skillfish`), falling back to the DRM node (`AMD GPU (card1)`) when KFD reports none.
 - `oneapi_host()` covers the **toolkit**, not the GPU runtime: a host using a distro-packaged Level Zero driver with no toolkit reports `None`, since reading that runtime's version needs linking rather than a file read. Not yet verified against a real install.
