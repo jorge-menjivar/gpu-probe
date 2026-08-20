@@ -102,8 +102,7 @@ fn parse_vm_stat_used(text: &str) -> Option<u64> {
 /// 2026), which list M1 as `Apple7`, M2 as `Apple8`, M3 and M4 as `Apple9`, and
 /// M5 as `Apple10`. Apple documents these per *series*, so one row covers a
 /// generation's Pro, Max and Ultra variants — which is what falls out of
-/// reading only the leading digits. Detection was exercised end to end on an
-/// `Apple M2` (macOS 26.5).
+/// reading only the leading digits.
 #[allow(dead_code)] // used on macOS + in tests; unused on other targets
 fn apple_family(name: &str) -> Option<crate::AppleFamily> {
     let rest = name.strip_prefix("Apple M")?;
@@ -389,8 +388,8 @@ mod tests {
         assert_eq!(parse_memsize("0"), Some(0));
     }
 
-    /// Trimmed from a real M2 running macOS 26.5, keeping the rows the parser
-    /// reads plus the compressor pair it must tell apart.
+    /// A representative `vm_stat` report on a 16 KiB-page host, trimmed to the
+    /// rows the parser reads plus the compressor pair it must tell apart.
     const VM_STAT: &str = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
                            Pages free:                                     3480.\n\
                            Pages active:                                  77803.\n\
@@ -415,14 +414,14 @@ mod tests {
         // active + wired + compressor, at 16 KiB per page.
         let expected = (77803 + 137_287 + 192_142) * 16384;
         assert_eq!(parse_vm_stat_used(VM_STAT), Some(expected));
-        // ~6.2 GiB of the 8 GiB this fixture was taken from.
+        // Sums to a plausible fraction of installed memory, not a multiple.
         assert!(expected < 8 * 1024 * 1024 * 1024);
     }
 
     #[test]
     fn used_counts_the_compressor_footprint_not_its_contents() {
         // "stored in" is the pre-compression count and dwarfs installed memory;
-        // reading it instead of "occupied by" would report ~19 GiB on 8 GiB.
+        // reading it instead of "occupied by" overshoots by several times.
         let stored = 1_263_882u64 * 16384;
         assert!(
             stored > 8 * 1024 * 1024 * 1024,

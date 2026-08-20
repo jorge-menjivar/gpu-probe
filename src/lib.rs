@@ -77,7 +77,7 @@ pub struct GpuInfo {
     /// An AMD APU reports its BIOS VRAM carveout plus the GTT pool the driver
     /// allocates from — the latter sized by the kernel's `ttm.pages_limit` —
     /// since the carveout alone is far below what the part can actually hand
-    /// out (512 MiB of 14.5 GiB on a BC-250).
+    /// out (512 MiB of 14.5 GiB on one such part).
     pub total_bytes: u64,
     /// Free device memory in bytes, when known.
     pub free_bytes: Option<u64>,
