@@ -24,13 +24,13 @@ Best-effort: you get an empty list on unsupported platforms, never an error.
 
 ```toml
 [dependencies]
-gpu-probe = "0.1"
+gpu-probe = "0.1.1"
 ```
 
 NVIDIA support pulls in `nvml-wrapper`. For AMD/Apple-only builds, drop it:
 
 ```toml
-gpu-probe = { version = "0.1", default-features = false }
+gpu-probe = { version = "0.1.1", default-features = false }
 ```
 
 ## Usage
