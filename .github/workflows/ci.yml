@@ -73,6 +73,50 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features --workspace -- -W clippy::pedantic -D warnings -W unused_must_use
 
+  # The Linux jobs structurally cannot cover this: `metal` and `kfd` are cfg'd
+  # per target, so a module that is dead or broken only on macOS still compiles
+  # clean on ubuntu. `macos-latest` is Apple Silicon, so the unified-memory
+  # path is the one that actually runs here.
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features --workspace -- -W clippy::pedantic -D warnings -W unused_must_use
+
+      - name: Run tests
+        run: cargo test --all-features --verbose
+
+      - name: Run doctests
+        run: cargo test --doc --all-features --verbose
+
+      # `nvidia` is a default feature that pulls in NVML, which no Mac can use.
+      # Apple-only consumers build with it off, so that configuration is checked
+      # on the platform those consumers are actually on.
+      - name: Run tests (nvidia disabled)
+        run: cargo test --no-default-features --verbose
+
+      # Runs system_profiler, sysctl and vm_stat for real and prints what the
+      # runner detected, so a regression in the probes is visible in the log
+      # rather than hidden behind an empty-result code path.
+      - name: Probe the runner's GPU
+        run: cargo run --example detect --all-features
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest

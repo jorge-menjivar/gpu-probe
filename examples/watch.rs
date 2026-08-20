@@ -72,8 +72,8 @@ fn main() {
         println!();
     }
 
-    // Host-wide toolchains, unlike the per-GPU fields above. Both rows always
-    // print, including when absent: "we looked and found nothing" is the point
+    // Host-wide toolchains, unlike the per-GPU fields above. Every row always
+    // prints, including when absent: "we looked and found nothing" is the point
     // of a probe tool, and a lone row for one vendor reads like it describes
     // the GPU above it rather than the host.
     //
@@ -93,5 +93,9 @@ fn main() {
     match gpu_probe::cuda_host() {
         Some(cuda) => println!("     cuda   {:>10}", cuda.driver_version.to_string()),
         None => println!("     cuda      unavailable"),
+    }
+    match gpu_probe::vulkan_host() {
+        Some(vulkan) => println!("     vulkan {:>10}", vulkan.api_version.to_string()),
+        None => println!("     vulkan    unavailable"),
     }
 }

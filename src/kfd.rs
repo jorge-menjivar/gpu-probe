@@ -15,6 +15,7 @@ use crate::GfxTarget;
 const TOPOLOGY: &str = "/sys/class/kfd/kfd/topology/nodes";
 
 /// One GPU node from the KFD topology.
+#[allow(dead_code)] // constructed on Linux; unused on other targets
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComputeNode {
     /// Minor number of the node's render device (`128` for `renderD128`).
@@ -90,6 +91,9 @@ pub(crate) fn nodes() -> Vec<ComputeNode> {
     nodes
 }
 
+// Only the tests call this stub, and the lib target is built without
+// `cfg(test)` — so there it really is dead, and `-D warnings` fails on it.
+#[allow(dead_code)]
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn nodes() -> Vec<ComputeNode> {
     Vec::new()

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Apple/macOS detection via `system_profiler SPDisplaysDataType` and `sysctl
-//! hw.memsize`. No Metal framework linkage required. Apple Silicon uses a
-//! unified memory architecture (no dedicated VRAM), so `total_bytes` falls
-//! back to total physical memory.
+//! Apple/macOS detection via `system_profiler SPDisplaysDataType`, `sysctl
+//! hw.memsize` and `vm_stat`. No Metal framework linkage required. Apple
+//! Silicon uses a unified memory architecture (no dedicated VRAM), so
+//! `total_bytes` falls back to total physical memory and the used/free split
+//! comes from system-wide paging statistics.
 
 /// Map a vendor id as printed by `system_profiler` (e.g. `0x106b`) to a
 /// [`Vendor`](crate::Vendor).
@@ -39,6 +40,54 @@ fn parse_memsize(content: &str) -> Option<u64> {
     content.trim().parse().ok()
 }
 
+/// Pull the page size out of the `vm_stat` header, which reads
+/// `Mach Virtual Memory Statistics: (page size of 16384 bytes)`.
+///
+/// Taken from the report itself rather than `hw.pagesize` so the counts and
+/// their multiplier always come from the same source: Apple Silicon pages are
+/// 16 KiB where Intel Macs use 4 KiB, and mixing the two would be off by 4x.
+#[allow(dead_code)] // used on macOS + in tests; unused on other targets
+fn parse_page_size(text: &str) -> Option<u64> {
+    let rest = text.split_once("page size of ")?.1;
+    rest.split_once(" bytes")?.0.trim().parse().ok()
+}
+
+/// Look up one `Pages ...: <count>.` row in `vm_stat` output. The trailing
+/// period is part of the format, not the number.
+#[allow(dead_code)] // used on macOS + in tests; unused on other targets
+fn page_count(text: &str, key: &str) -> Option<u64> {
+    for line in text.lines() {
+        if let Some(value) = line.trim().strip_prefix(key) {
+            return value.trim().trim_end_matches('.').trim().parse().ok();
+        }
+    }
+    None
+}
+
+/// Bytes in use, as macOS itself accounts for them: resident anonymous and
+/// kernel pages (`active` + `wired down`) plus the compressor's footprint.
+/// This is the figure Activity Monitor labels "Memory Used".
+///
+/// Apple Silicon shares one pool between CPU and GPU, so system-wide usage *is*
+/// the GPU's usage; there is no separate VRAM to account for. Callers apply
+/// this only to unified-memory GPUs — a discrete card on an Intel Mac reports
+/// its own VRAM and must not be described by these numbers.
+///
+/// Reads *occupied by* rather than *stored in* the compressor: the former is
+/// the compressor's real physical footprint, while the latter counts pages as
+/// they were before compression and routinely exceeds installed memory.
+#[allow(dead_code)] // used on macOS + in tests; unused on other targets
+fn parse_vm_stat_used(text: &str) -> Option<u64> {
+    let page_size = parse_page_size(text)?;
+    let active = page_count(text, "Pages active:")?;
+    let wired = page_count(text, "Pages wired down:")?;
+    let compressor = page_count(text, "Pages occupied by compressor:")?;
+    active
+        .checked_add(wired)?
+        .checked_add(compressor)?
+        .checked_mul(page_size)
+}
+
 /// Parse plain-text `system_profiler SPDisplaysDataType` output into one
 /// Metal GPU family for an Apple Silicon chip name — `Apple M2 Pro` is
 /// `apple8`.
@@ -49,7 +98,12 @@ fn parse_memsize(content: &str) -> Option<u64> {
 /// would not. Non-Apple chipsets (`AMD Radeon Pro 5500M` on an Intel Mac) fall
 /// out naturally, since the prefix will not match.
 ///
-/// **Unverified against real hardware** — there is no Mac to test this on.
+/// The rows come from Apple's published Metal Feature Set Tables (May 21,
+/// 2026), which list M1 as `Apple7`, M2 as `Apple8`, M3 and M4 as `Apple9`, and
+/// M5 as `Apple10`. Apple documents these per *series*, so one row covers a
+/// generation's Pro, Max and Ultra variants — which is what falls out of
+/// reading only the leading digits. Detection was exercised end to end on an
+/// `Apple M2` (macOS 26.5).
 #[allow(dead_code)] // used on macOS + in tests; unused on other targets
 fn apple_family(name: &str) -> Option<crate::AppleFamily> {
     let rest = name.strip_prefix("Apple M")?;
@@ -60,8 +114,9 @@ fn apple_family(name: &str) -> Option<crate::AppleFamily> {
     let generation = match chip {
         1 => 7,
         2 => 8,
-        // M3 introduced apple9; M4 supports it too, and no apple10 exists yet.
+        // M3 introduced apple9 and M4 stayed on it; M5 moved to apple10.
         3 | 4 => 9,
+        5 => 10,
         _ => return None,
     };
     Some(crate::AppleFamily::new(generation))
@@ -117,28 +172,62 @@ pub(crate) fn detect() -> Vec<crate::GpuInfo> {
         .map(|o| parse_system_profiler(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or_default();
 
-    // Apple Silicon reports no VRAM line — backfill from physical memory.
+    // Apple Silicon reports no VRAM line — backfill from physical memory, and
+    // with it the unified pool's usage. A zero total is what marks a GPU as
+    // unified here, so a discrete card that already reported its own VRAM keeps
+    // the `None` split rather than being handed system-wide figures.
     let memsize = sysctl_memsize();
+    // Read lazily, the way the DRM probe defers its system-memory lookup: the
+    // split costs a subprocess, and an Intel Mac with only a discrete card
+    // never needs one.
+    let mut split: Option<(Option<u64>, Option<u64>)> = None;
     for gpu in &mut gpus {
         if gpu.total_bytes == 0
             && let Some(mem) = memsize
         {
             gpu.total_bytes = mem;
+            let (used, free) = *split.get_or_insert_with(|| unified_split(mem));
+            gpu.used_bytes = used;
+            gpu.free_bytes = free;
         }
     }
+    // Nothing was parsed, so the loop above never ran and never read the split.
     if gpus.is_empty()
         && let Some(mem) = memsize
     {
+        let (used, free) = unified_split(mem);
         gpus.push(GpuInfo {
             name: "Apple GPU".to_string(),
             vendor: Vendor::Apple,
             total_bytes: mem,
-            free_bytes: None,
-            used_bytes: None,
+            free_bytes: free,
+            used_bytes: used,
             arch_target: None,
         });
     }
     gpus
+}
+
+/// The `(used, free)` split of a unified pool of `total` bytes, or `(None,
+/// None)` when `vm_stat` is unavailable or reports more than is installed —
+/// a total that small would make `free` underflow, and a partial answer is
+/// worse than admitting the split is unknown.
+#[cfg(target_os = "macos")]
+fn unified_split(total: u64) -> (Option<u64>, Option<u64>) {
+    let Some(used) = vm_stat_used().filter(|&used| used <= total) else {
+        return (None, None);
+    };
+    (Some(used), Some(total - used))
+}
+
+#[cfg(target_os = "macos")]
+fn vm_stat_used() -> Option<u64> {
+    let output = std::process::Command::new("vm_stat").output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| parse_vm_stat_used(&String::from_utf8_lossy(&output.stdout)))
+        .flatten()
 }
 
 #[cfg(target_os = "macos")]
@@ -169,6 +258,19 @@ mod tests {
         assert_eq!(apple_family("Apple M2 Pro"), Some(AppleFamily::new(8)));
         assert_eq!(apple_family("Apple M3 Ultra"), Some(AppleFamily::new(9)));
         assert_eq!(apple_family("Apple M4"), Some(AppleFamily::new(9)));
+        // M5 is the first generation on apple10.
+        assert_eq!(apple_family("Apple M5"), Some(AppleFamily::new(10)));
+        assert_eq!(apple_family("Apple M5 Pro"), Some(AppleFamily::new(10)));
+        assert_eq!(apple_family("Apple M5 Max"), Some(AppleFamily::new(10)));
+    }
+
+    #[test]
+    fn two_digit_families_render_unpacked() {
+        // `apple10` must not collapse to `apple1`.
+        assert_eq!(
+            apple_family("Apple M5").map(|family| family.to_string()),
+            Some("apple10".to_string())
+        );
     }
 
     #[test]
@@ -285,5 +387,67 @@ mod tests {
         assert_eq!(parse_memsize("nope"), None);
         assert_eq!(parse_memsize(""), None);
         assert_eq!(parse_memsize("0"), Some(0));
+    }
+
+    /// Trimmed from a real M2 running macOS 26.5, keeping the rows the parser
+    /// reads plus the compressor pair it must tell apart.
+    const VM_STAT: &str = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
+                           Pages free:                                     3480.\n\
+                           Pages active:                                  77803.\n\
+                           Pages inactive:                                74322.\n\
+                           Pages speculative:                              2300.\n\
+                           Pages wired down:                             137287.\n\
+                           Pages purgeable:                                   0.\n\
+                           Pages stored in compressor:                  1263882.\n\
+                           Pages occupied by compressor:                 192142.\n";
+
+    #[test]
+    fn reads_vm_stat_page_size_and_counts() {
+        assert_eq!(parse_page_size(VM_STAT), Some(16384));
+        assert_eq!(page_count(VM_STAT, "Pages active:"), Some(77803));
+        assert_eq!(page_count(VM_STAT, "Pages wired down:"), Some(137_287));
+        assert_eq!(page_count(VM_STAT, "Pages free:"), Some(3480));
+        assert_eq!(page_count(VM_STAT, "Pages absent:"), None);
+    }
+
+    #[test]
+    fn sums_used_pages_the_way_activity_monitor_does() {
+        // active + wired + compressor, at 16 KiB per page.
+        let expected = (77803 + 137_287 + 192_142) * 16384;
+        assert_eq!(parse_vm_stat_used(VM_STAT), Some(expected));
+        // ~6.2 GiB of the 8 GiB this fixture was taken from.
+        assert!(expected < 8 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn used_counts_the_compressor_footprint_not_its_contents() {
+        // "stored in" is the pre-compression count and dwarfs installed memory;
+        // reading it instead of "occupied by" would report ~19 GiB on 8 GiB.
+        let stored = 1_263_882u64 * 16384;
+        assert!(
+            stored > 8 * 1024 * 1024 * 1024,
+            "fixture must expose the trap"
+        );
+        assert!(parse_vm_stat_used(VM_STAT).is_some_and(|used| used < stored));
+    }
+
+    #[test]
+    fn vm_stat_parsing_needs_every_field() {
+        // A report missing any row the sum needs yields nothing, rather than
+        // silently undercounting.
+        assert_eq!(parse_vm_stat_used(""), None);
+        assert_eq!(parse_page_size("Pages free: 1.\n"), None);
+        let no_wired = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
+                        Pages active:                                  77803.\n\
+                        Pages occupied by compressor:                 192142.\n";
+        assert_eq!(parse_vm_stat_used(no_wired), None);
+    }
+
+    #[test]
+    fn page_size_survives_a_four_kib_intel_header() {
+        let intel = "Mach Virtual Memory Statistics: (page size of 4096 bytes)\n";
+        assert_eq!(parse_page_size(intel), Some(4096));
+        assert_eq!(parse_page_size("(page size of many bytes)"), None);
+        assert_eq!(parse_page_size("(page size of 4096)"), None);
     }
 }
