@@ -103,7 +103,7 @@ pub(crate) fn nodes() -> Vec<ComputeNode> {
 mod tests {
     use super::*;
 
-    /// Trimmed from a real BC-250 node.
+    /// Trimmed from an AMD GPU node.
     const NODE: &str = "cpu_cores_count 0\nsimd_count 48\ngfx_target_version 100103\n\
                         vendor_id 4098\ndevice_id 5118\ndrm_render_minor 128\nnum_xcc 1\n";
 
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn decodes_gfx_target_versions() {
-        // The BC-250 this was written against.
+        // A gfx1013 part.
         assert_eq!(parse_gfx_target(100_103), Some(GfxTarget::new(10, 1, 3)));
         assert_eq!(parse_gfx_target(100_300), Some(GfxTarget::new(10, 3, 0)));
         // MI200: step 10, which renders as the `a` in `gfx90a`.

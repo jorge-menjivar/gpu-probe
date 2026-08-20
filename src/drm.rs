@@ -11,7 +11,7 @@
 //! the `nvidia` module.
 //!
 //! AMD APUs do expose `mem_info_vram_total`, but only as a small BIOS carveout
-//! (512 MiB on a BC-250, for instance) — the memory such a part really
+//! (as little as 512 MiB, for instance) — the memory such a part really
 //! allocates from is the GTT pool in `mem_info_gtt_total`, sized by the kernel's
 //! `ttm.pages_limit`. [`fold_gtt`] adds the two together for cards that look
 //! integrated, so a unified-memory part reports what it can actually hand out.
@@ -77,7 +77,7 @@ const INTEGRATED_VRAM_MAX: u64 = 2 * 1024 * 1024 * 1024;
 /// answered would understate usage and so overstate free memory.
 ///
 /// The carveout is counted, not dropped, which is worth knowing because the two
-/// runtimes on such a part disagree. On a BC-250 with a 512 MiB carveout over a
+/// runtimes on such a part disagree. On an APU with a 512 MiB carveout over a
 /// 14 GiB GTT pool:
 ///
 /// ```text
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn apu_carveout_folds_in_gtt_pool() {
-        // Real BC-250 readings: a 512 MiB carveout over a 14 GiB GTT pool.
+        // A 512 MiB carveout over a 14 GiB GTT pool, as an APU reports it.
         let (total, used) = fold_gtt(
             536_870_912,
             Some(522_469_376),
