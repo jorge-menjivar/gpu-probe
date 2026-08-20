@@ -623,7 +623,7 @@ pub fn cuda_host() -> Option<CudaHost> {
 ///
 /// `None` does not mean the GPU is unusable for compute: the kernel side is a
 /// separate component, and what a build has to target is
-/// [`GpuInfo::gfx_target`], reported with no `ROCm` installed at all.
+/// [`GpuInfo::arch_target`], reported with no `ROCm` installed at all.
 ///
 /// ```no_run
 /// use gpu_probe::RocmVersion;
