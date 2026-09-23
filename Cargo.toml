@@ -12,7 +12,7 @@
     categories = ["hardware-support"]
 
 [dependencies]
-    nvml-wrapper = { version = "0.12", optional = true }
+    nvml-wrapper = { version = "0.13", optional = true }
     serde_json = "1.0.151"
 
 [features]
